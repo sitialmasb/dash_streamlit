@@ -64,8 +64,9 @@ def render_admin_page(df_current: pd.DataFrame, loaded_file_name: str):
                 border-radius: 6px !important;
             }
 
-            /* Navigation Tabs di Konten Admin */
-            section[data-testid="stMain"] div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+            /* Navigation Tabs di Konten Admin (Berlaku untuk Local & Cloud) */
+            div[data-testid="stTabs"] [data-baseweb="tab-list"],
+            div[data-testid="stTabs"] div[role="tablist"] {
                 gap: 8px !important;
                 background-color: #f1f5f9 !important;
                 padding: 6px 8px !important;
@@ -74,10 +75,17 @@ def render_admin_page(df_current: pd.DataFrame, loaded_file_name: str):
                 width: fit-content !important;
                 margin-bottom: 22px !important;
             }
-            section[data-testid="stMain"] div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+
+            /* Hilangkan garis highlight bawaan browser/BaseWeb */
+            div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+            div[data-testid="stTabs"] div[role="tablist"] + div {
                 display: none !important;
+                height: 0px !important;
             }
-            section[data-testid="stMain"] div[data-testid="stTabs"] [data-baseweb="tab"] {
+
+            /* Tombol tab default */
+            div[data-testid="stTabs"] [data-baseweb="tab"],
+            div[data-testid="stTabs"] button[role="tab"] {
                 height: 38px !important;
                 padding: 0 18px !important;
                 background-color: transparent !important;
@@ -88,12 +96,18 @@ def render_admin_page(df_current: pd.DataFrame, loaded_file_name: str):
                 font-weight: 700 !important;
                 letter-spacing: 0.01em !important;
             }
-            section[data-testid="stMain"] div[data-testid="stTabs"] [aria-selected="true"] {
+
+            /* Tombol tab aktif (Biru & Rounded Pill) */
+            div[data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"],
+            div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
                 background-color: #237ece !important;
                 color: #ffffff !important;
+                border-radius: 8px !important;
                 box-shadow: 0 2px 8px rgba(35, 126, 206, 0.28) !important;
             }
-            section[data-testid="stMain"] div[data-testid="stTabs"] [aria-selected="true"] p {
+
+            div[data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] p,
+            div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] p {
                 color: #ffffff !important;
             }
 
