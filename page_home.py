@@ -62,8 +62,9 @@ def render_home_page(df: pd.DataFrame):
     elif "news_date" in df_clean.columns:
         df_clean["NEWS_DATE"] = pd.to_datetime(df_clean["news_date"], errors="coerce")
 
-    sent_col = "SENTIMENT" if "SENTIMENT" in df_clean.columns else ("sentiment" if "sentiment" in df_clean.columns else None)
-    topic_col = "ISSUE_TOPIC" if "ISSUE_TOPIC" in df_clean.columns else ("topic" if "topic" in df_clean.columns else None)
+    sent_col = "SENTIMENT" if "SENTIMENT" in df_clean.columns else None
+    topic_col = "ISSUE_TOPIC" if "ISSUE_TOPIC" in df_clean.columns else None
+    subtopic_col = "ISSUE_SUBTOPIC" if "ISSUE_SUBTOPIC" in df_clean.columns else None
     tier_col = "TIER" if "TIER" in df_clean.columns else ("new_tier" if "new_tier" in df_clean.columns else None)
     url_col = "CLEAN_URL" if "CLEAN_URL" in df_clean.columns else ("domain" if "domain" in df_clean.columns else None)
     title_col = next((c for c in ["NEWS", "NEWS_SUMMARY", "news_title", "title", "headline"] if c in df_clean.columns), None)
@@ -149,10 +150,44 @@ def render_home_page(df: pd.DataFrame):
         df_clean = df_clean[df_clean[tier_col].astype(str) == sel_tier]
 
     # Kalkulasi Metrik
+    # TOTAL ARTIKEL pada KPI dihitung khusus untuk hari ini,
+    # bukan seluruh artikel dalam dataset.
+    # Perhitungan ini dilakukan sebelum filter tanggal agar KPI
+    # tetap menunjukkan jumlah artikel yang terbit hari ini.
+    df_today = df_clean.copy()
+
+    if sel_tier != "All Media Tier" and tier_col:
+        df_today = df_today[df_today[tier_col].astype(str) == sel_tier]
+
+    today = datetime.now().date()
+
+    if "NEWS_DATE" in df_today.columns:
+        total_article_today = (
+            df_today["NEWS_DATE"].dt.date == today
+        ).sum()
+    else:
+        total_article_today = 0
+
+    # total_vol tetap digunakan untuk kalkulasi sentiment dan
+    # reputation index berdasarkan filter tanggal yang dipilih.
     total_vol = len(df_clean)
-    pos_cnt = len(df_clean[df_clean[sent_col].astype(str).str.lower().str.contains("pos")]) if sent_col else 0
-    neu_cnt = len(df_clean[df_clean[sent_col].astype(str).str.lower().str.contains("neu|net")]) if sent_col else 0
-    neg_cnt = len(df_clean[df_clean[sent_col].astype(str).str.lower().str.contains("neg")]) if sent_col else 0
+    pos_cnt = (
+        (df_clean["SENTIMENT"] == "Positive").sum()
+        if "SENTIMENT" in df_clean.columns
+        else 0
+    )
+
+    neu_cnt = (
+        (df_clean["SENTIMENT"] == "Neutral").sum()
+        if "SENTIMENT" in df_clean.columns
+        else 0
+    )
+
+    neg_cnt = (
+        (df_clean["SENTIMENT"] == "Negative").sum()
+        if "SENTIMENT" in df_clean.columns
+        else 0
+    )
 
     pos_pct = (pos_cnt / total_vol * 100) if total_vol > 0 else 57.6
     neu_pct = (neu_cnt / total_vol * 100) if total_vol > 0 else 24.07
@@ -172,6 +207,36 @@ def render_home_page(df: pd.DataFrame):
         ri_color = "#ef4444"
 
     # -------------------------------------------------------------
+    # TODAY'S ARTICLES & DATASET LAST UPDATED
+    # -------------------------------------------------------------
+    # Count articles published today.
+    today = pd.Timestamp.now().normalize()
+    today_article_count = 0
+
+    if "NEWS_DATE" in df_clean.columns:
+        today_article_count = int(
+            (df_clean["NEWS_DATE"].dt.normalize() == today).sum()
+        )
+
+    # DATASET_LAST_UPDATED must be supplied by the dataset-loading layer.
+    # It represents the dataset upload time, NOT the dashboard execution time.
+    dataset_last_updated = df.attrs.get("DATASET_LAST_UPDATED", None)
+
+    if dataset_last_updated is None:
+        dataset_last_updated = df.attrs.get("LAST_UPDATED", None)
+
+    if dataset_last_updated is not None:
+        try:
+            dataset_last_updated = pd.to_datetime(dataset_last_updated)
+            last_updated_text = dataset_last_updated.strftime(
+                "%B %d, %Y • %I:%M %p"
+            )
+        except Exception:
+            last_updated_text = str(dataset_last_updated)
+    else:
+        last_updated_text = "Not available"
+
+    # -------------------------------------------------------------
     # 2. KPI METRICS (TOTAL & REPUTATION ATAS-BAWAH, SENTIMENT TENGAH, TOP TOPICS KANAN)
     # -------------------------------------------------------------
     col_kpi_stack, col_kpi_sent, col_kpi_topics = st.columns([0.85, 1.35, 1.45], gap="large")
@@ -179,10 +244,10 @@ def render_home_page(df: pd.DataFrame):
     with col_kpi_stack:
         st.markdown(f"""
             <div class="kpi-unit-wrapper">
-                <span class="home-card-title">TOTAL ARTIKEL</span>
+                <span class="home-card-title">TODAY\'S ARTICLES</span>
             </div>
             <div style="display:flex; align-items:baseline; margin-bottom: 24px;">
-                <span style="font-size:1.85rem; font-weight:800; color:#0f172a; line-height:1;">{total_vol:,}</span>
+                <span style="font-size:1.85rem; font-weight:800; color:#0f172a; line-height:1;">{total_article_today:,}</span>
             </div>
             <div class="kpi-unit-wrapper">
                 <span class="home-card-title">REPUTATION INDEX</span>

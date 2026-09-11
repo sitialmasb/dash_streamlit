@@ -162,14 +162,72 @@ def get_base64_image(image_path):
         return ""
 
 def standardize_sentiment_en(val):
-    """Menyeragamkan variasi nilai sentimen ke Positive, Neutral, atau Negative."""
+    """
+    Menyeragamkan berbagai variasi sentiment menjadi:
+    Positive, Negative, atau Neutral.
+    """
+
     if pd.isna(val):
         return "Neutral"
+
     s = str(val).strip().lower()
-    if any(k in s for k in ["pos", "baik", "positif", "1"]):
+
+    # Hilangkan spasi/karakter yang tidak diperlukan
+    s = s.replace("_", " ").replace("-", " ").strip()
+
+    # POSITIVE
+    positive_values = {
+        "positive",
+        "positif",
+        "pos",
+        "good",
+        "baik",
+        "1",
+        "+1",
+        "1.0"
+    }
+
+    # NEGATIVE
+    negative_values = {
+        "negative",
+        "negatif",
+        "neg",
+        "bad",
+        "buruk",
+        "-1",
+        "-1.0"
+    }
+
+    # NEUTRAL
+    neutral_values = {
+        "neutral",
+        "netral",
+        "neu",
+        "net",
+        "0",
+        "0.0"
+    }
+
+    if s in positive_values:
         return "Positive"
-    elif any(k in s for k in ["neg", "buruk", "negatif", "-1"]):
+
+    if s in negative_values:
         return "Negative"
+
+    if s in neutral_values:
+        return "Neutral"
+
+    # Fallback untuk tulisan yang mengandung keyword
+    if "posit" in s or "positive" in s or "baik" in s:
+        return "Positive"
+
+    if "negat" in s or "negative" in s or "buruk" in s:
+        return "Negative"
+
+    if "neutral" in s or "netral" in s or "neu" in s:
+        return "Neutral"
+
+    # Jika tidak dikenali → Neutral
     return "Neutral"
 
 def apply_clean_white_layout(fig, height=280):
@@ -295,7 +353,7 @@ def check_login():
 
 @st.cache_data
 def load_local_dataset():
-    """Memuat dataset lokal dengan memprioritaskan tkb_news.xlsx."""
+    """Memuat dataset lokal dan menyelaraskan kolom baru secara dinamis."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     candidate_files = [
         "tkb_news.xlsx",
@@ -322,30 +380,71 @@ def load_local_dataset():
                 except Exception:
                     df = pd.read_csv(file_found, sep=';', low_memory=False)
             
-            # Format nama kolom ke UPPERCASE
+            # Format seluruh nama kolom ke UPPERCASE
             df.columns = [str(c).strip().upper() for c in df.columns]
             
-            # Parsing Tanggal
+            # 1. Parsing Tanggal Berita
             if "NEWS_DATE" in df.columns:
                 df["NEWS_DATE"] = pd.to_datetime(df["NEWS_DATE"], errors="coerce")
             
-            # Standardisasi Sentimen
+            # ============================================================
+            # 2. STANDARDISASI TOPIC
+            #    Sumber utama WAJIB: ISSUE_TOPIC
+            # ============================================================
+
+            if "ISSUE_TOPIC" in df.columns:
+                df["ISSUE_TOPIC"] = (
+                    df["ISSUE_TOPIC"]
+                    .fillna("General")
+                    .astype(str)
+                    .str.strip()
+                )
+            else:
+                # Jika kolom wajib tidak ada, buat agar dashboard tidak crash
+                df["ISSUE_TOPIC"] = "General"
+
+
+            # ============================================================
+            # 3. STANDARDISASI SUBTOPIC
+            #    Sumber utama WAJIB: ISSUE_SUBTOPIC
+            # ============================================================
+
+            if "ISSUE_SUBTOPIC" in df.columns:
+                df["ISSUE_SUBTOPIC"] = (
+                    df["ISSUE_SUBTOPIC"]
+                    .fillna("General")
+                    .astype(str)
+                    .str.strip()
+                )
+            else:
+                # Jika kolom tidak ada, buat default
+                df["ISSUE_SUBTOPIC"] = "General"
+
+
+            # ============================================================
+            # 4. STANDARDISASI SENTIMENT
+            # ============================================================
+
+            if "SENTIMENT" in df.columns:
+                df["SENTIMENT"] = df["SENTIMENT"].apply(standardize_sentiment_en)
+            else:
+                df["SENTIMENT"] = "Neutral"
+
+            # 4. Standardisasi Sentimen
             if "SENTIMENT" in df.columns:
                 df["SENTIMENT"] = df["SENTIMENT"].apply(standardize_sentiment_en)
 
-            # Standardisasi TIER
+            # 5. Standardisasi TIER
             if "TIER" in df.columns:
                 df["TIER"] = df["TIER"].fillna(2).astype(str).apply(
                     lambda x: f"Tier {x}" if not str(x).lower().startswith("tier") else str(x)
                 )
 
-            # Standardisasi Topik & Subtopik
-            if "ISSUE_TOPIC" in df.columns:
-                df["ISSUE_TOPIC"] = df["ISSUE_TOPIC"].fillna("General").astype(str).str.strip()
-            if "SUBCATEGORY" in df.columns:
-                df["SUBCATEGORY"] = df["SUBCATEGORY"].fillna("General").astype(str).str.strip()
+            # 6. Pembersihan Media / URL
             if "CLEAN_URL" in df.columns:
                 df["CLEAN_URL"] = df["CLEAN_URL"].fillna("Media").astype(str).str.strip()
+            elif "NEWS_URL" in df.columns:
+                df["CLEAN_URL"] = df["NEWS_URL"].astype(str).str.replace(r'^https?://(www\.)?', '', regex=True).str.split('/').str[0]
 
             return df, os.path.basename(file_found)
         except Exception as e:
@@ -355,29 +454,43 @@ def load_local_dataset():
     return pd.DataFrame(), None
 
 def apply_page_filters(df, filter_state):
-    """Menyaring DataFrame menggunakan nama kolom UPPERCASE."""
+    """Menyaring DataFrame menggunakan kolom canonical dataset."""
+
     if not filter_state or df is None or df.empty:
         return df
 
     df_out = df.copy()
-    
+
     d_range = filter_state.get("date_range")
-    if d_range and isinstance(d_range, (tuple, list)) and len(d_range) == 2:
+
+    if (
+        d_range
+        and isinstance(d_range, (tuple, list))
+        and len(d_range) == 2
+    ):
         s_d, e_d = d_range
+
         if "NEWS_DATE" in df_out.columns and s_d and e_d:
-            df_out = df_out[(df_out["NEWS_DATE"].dt.date >= s_d) & (df_out["NEWS_DATE"].dt.date <= e_d)]
+            df_out = df_out[
+                (df_out["NEWS_DATE"].dt.date >= s_d)
+                & (df_out["NEWS_DATE"].dt.date <= e_d)
+            ]
 
     mapping = [
         ("sentiment", "SENTIMENT"),
         ("tier", "TIER"),
         ("topic", "ISSUE_TOPIC"),
-        ("subtopic", "SUBCATEGORY"),
+        ("subtopic", "ISSUE_SUBTOPIC"),
         ("domain", "CLEAN_URL")
     ]
+
     for key, col_name in mapping:
         vals = filter_state.get(key, [])
+
         if vals and col_name in df_out.columns:
-            df_out = df_out[df_out[col_name].astype(str).isin(vals)]
+            df_out = df_out[
+                df_out[col_name].astype(str).isin(vals)
+            ]
 
     return df_out
 

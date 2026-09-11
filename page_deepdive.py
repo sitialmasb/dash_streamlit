@@ -16,10 +16,33 @@ def render_deepdive_page(df_raw: pd.DataFrame):
         df_clean["NEWS_DATE"] = pd.to_datetime(df_clean["news_date"], errors="coerce")
 
     # Standardisasi nama-nama kolom dataset
-    topic_col = "NEWS_CATEGORY" if "NEWS_CATEGORY" in df_clean.columns else next((c for c in ["ISSUE_TOPIC", "topic", "TOPIC"] if c in df_clean.columns), None)
-    subtopic_col = "SUBCATEGORY" if "SUBCATEGORY" in df_clean.columns else next((c for c in ["subtopic", "SUBTOPIC"] if c in df_clean.columns), None)
-    sent_col = next((c for c in ["SENTIMENT", "sentiment"] if c in df_clean.columns), None)
-    tier_col = next((c for c in ["TIER", "new_tier", "tier"] if c in df_clean.columns), None)
+    # ============================================================
+    # CANONICAL DATASET COLUMNS
+    # ============================================================
+
+    topic_col = (
+        "ISSUE_TOPIC"
+        if "ISSUE_TOPIC" in df_clean.columns
+        else None
+    )
+
+    subtopic_col = (
+        "ISSUE_SUBTOPIC"
+        if "ISSUE_SUBTOPIC" in df_clean.columns
+        else None
+    )
+
+    sent_col = (
+        "SENTIMENT"
+        if "SENTIMENT" in df_clean.columns
+        else None
+    )
+
+    tier_col = (
+        "TIER"
+        if "TIER" in df_clean.columns
+        else None
+    )
     media_col = next((c for c in ["CLEAN_URL", "MEDIA", "media", "SOURCE", "source", "MEDIA_DOMAIN"] if c in df_clean.columns), None)
     title_col = next((c for c in ["NEWS", "NEWS_SUMMARY", "title", "headline"] if c in df_clean.columns), None)
     
@@ -605,8 +628,9 @@ SELECTED TOPIC: {sel_t['name']}
 
         df_art = df_sub_topic.dropna(subset=[title_col]).copy() if title_col and not df_sub_topic.empty else pd.DataFrame()
         if not df_art.empty and sel_art_sent != "All Sentiment" and sent_col:
-            target_key = sel_art_sent[:3].lower()
-            df_art = df_art[df_art[sent_col].astype(str).str.lower().str.contains(target_key)]
+            df_art = df_art[
+            df_art[sent_col] == sel_art_sent
+        ]
 
         if not df_art.empty:
             df_show = pd.DataFrame()
@@ -628,7 +652,7 @@ SELECTED TOPIC: {sel_t['name']}
             else:
                 df_show["Date"] = "-"
                 
-            df_show["Sentiment"] = df_art[sent_col].astype(str).str.capitalize() if sent_col else "Neutral"
+            df_show["Sentiment"] = df_art[sent_col]
 
             st.dataframe(
                 df_show,

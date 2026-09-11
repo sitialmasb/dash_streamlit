@@ -17,9 +17,30 @@ def render_sentiment_analysis_page(df_raw: pd.DataFrame):
         df_clean["NEWS_DATE"] = pd.to_datetime(df_clean["news_date"], errors="coerce")
 
     # Standardize dataset columns
-    sent_col = "SENTIMENT" if "SENTIMENT" in df_clean.columns else ("sentiment" if "sentiment" in df_clean.columns else None)
-    topic_col = "ISSUE_TOPIC" if "ISSUE_TOPIC" in df_clean.columns else ("topic" if "topic" in df_clean.columns else None)
-    tier_col = "TIER" if "TIER" in df_clean.columns else ("new_tier" if "new_tier" in df_clean.columns else None)
+
+    sent_col = (
+        "SENTIMENT"
+        if "SENTIMENT" in df_clean.columns
+        else None
+    )
+
+    topic_col = (
+        "ISSUE_TOPIC"
+        if "ISSUE_TOPIC" in df_clean.columns
+        else None
+    )
+
+    subtopic_col = (
+        "ISSUE_SUBTOPIC"
+        if "ISSUE_SUBTOPIC" in df_clean.columns
+        else None
+    )
+
+    tier_col = (
+        "TIER"
+        if "TIER" in df_clean.columns
+        else None
+    )
     media_col = next((c for c in ["CLEAN_URL", "clean_url", "MEDIA", "media", "SOURCE", "source", "MEDIA_DOMAIN"] if c in df_clean.columns), None)
     title_col = next((c for c in ["NEWS", "NEWS_SUMMARY", "news_title", "title", "headline"] if c in df_clean.columns), None)
 
@@ -618,8 +639,7 @@ def render_sentiment_analysis_page(df_raw: pd.DataFrame):
         else:
             df_show["Date"] = "-"
 
-        df_show["Sentiment"] = df_table[sent_col].astype(str).str.capitalize() if sent_col else "Neutral"
-
+        df_show["Sentiment"] = df_art[sent_col]
         st.dataframe(
             df_show,
             use_container_width=True,
