@@ -413,27 +413,68 @@ def render_home_page(df: pd.DataFrame):
 
         if prov_col and not df_clean[prov_col].dropna().empty:
             import requests
-            import json
 
             @st.cache_data(show_spinner=False)
             def load_indonesia_geojson():
-                url = "https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json"
-                try:
-                    res = requests.get(url, timeout=10)
-                    return res.json()
-                except Exception:
-                    return None
+                """Load province boundaries with a reliable fallback source."""
+                geojson_sources = [
+                    (
+                        "https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json",
+                        "Propinsi",
+                    ),
+                    (
+                        "https://raw.githubusercontent.com/ans-4175/peta-indonesia-geojson/master/indonesia-prov.geojson",
+                        "Propinsi",
+                    ),
+                ]
 
-            geojson_data = load_indonesia_geojson()
+                headers = {
+                    "User-Agent": "TKB-News-Sentiment-Dashboard/1.0"
+                }
+
+                for url, property_key in geojson_sources:
+                    try:
+                        res = requests.get(url, headers=headers, timeout=15)
+                        res.raise_for_status()
+                        data = res.json()
+
+                        if (
+                            isinstance(data, dict)
+                            and data.get("type") == "FeatureCollection"
+                            and data.get("features")
+                        ):
+                            return data, property_key
+                    except Exception:
+                        continue
+
+                return None, None
+
+            geojson_data, geojson_property = load_indonesia_geojson()
 
             if geojson_data:
                 official_provs = []
+
                 for feat in geojson_data.get("features", []):
-                    p_name = feat.get("properties", {}).get("Propinsi") or feat.get("properties", {}).get("name")
+                    properties = feat.get("properties", {})
+                    p_name = (
+                        properties.get(geojson_property)
+                        or properties.get("Propinsi")
+                        or properties.get("PROVINSI")
+                        or properties.get("name")
+                        or properties.get("NAME")
+                    )
+
                     if p_name:
                         official_provs.append(str(p_name).strip().upper())
 
-                s_prov = df_clean[prov_col].dropna().astype(str).str.strip().str.upper()
+                s_prov = (
+                    df_clean[prov_col]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                )
+
                 prov_alias = {
                     "JAKARTA": "DKI JAKARTA",
                     "YOGYAKARTA": "DAERAH ISTIMEWA YOGYAKARTA",
@@ -443,17 +484,20 @@ def render_home_page(df: pd.DataFrame):
                     "NTB": "NUSA TENGGARA BARAT",
                     "NTT": "NUSA TENGGARA TIMUR"
                 }
+
                 s_prov = s_prov.replace(prov_alias)
                 prov_counts = s_prov.value_counts().to_dict()
 
                 map_rows = []
                 for p in set(official_provs):
                     cnt = prov_counts.get(p, 0)
+
                     if cnt == 0:
                         for k, v in prov_counts.items():
                             if k in p or p in k:
                                 cnt = v
                                 break
+
                     map_rows.append({"PROVINSI": p, "COUNT": cnt})
 
                 df_map = pd.DataFrame(map_rows)
@@ -470,11 +514,15 @@ def render_home_page(df: pd.DataFrame):
                 fig_map = go.Figure(go.Choropleth(
                     geojson=geojson_data,
                     locations=df_map["PROVINSI"],
-                    featureidkey="properties.Propinsi",
+                    featureidkey=f"properties.{geojson_property}",
                     z=df_map["COUNT"],
                     colorscale=blues_scale,
                     zmin=0,
-                    zmax=df_map["COUNT"].max() if df_map["COUNT"].max() > 0 else 100,
+                    zmax=(
+                        df_map["COUNT"].max()
+                        if not df_map.empty and df_map["COUNT"].max() > 0
+                        else 100
+                    ),
                     marker_line_width=1.0,
                     marker_line_color="#64748b",
                     hovertemplate="<b>%{location}</b><br>Volume Berita: %{z:,}<extra></extra>",
@@ -506,7 +554,7 @@ def render_home_page(df: pd.DataFrame):
                 )
 
                 st.plotly_chart(
-                    fig_map, 
+                    fig_map,
                     use_container_width=True,
                     config={
                         "displayModeBar": True,
@@ -514,8 +562,57 @@ def render_home_page(df: pd.DataFrame):
                         "displaylogo": False
                     }
                 )
+
             else:
-                st.caption("Gagal memuat batas wilayah peta.")
+                # Do not show an error message if the external GeoJSON is
+                # temporarily unavailable. Keep the dashboard functional.
+                s_prov = (
+                    df_clean[prov_col]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                    .replace({
+                        "JAKARTA": "DKI JAKARTA",
+                        "YOGYAKARTA": "DAERAH ISTIMEWA YOGYAKARTA",
+                        "DI YOGYAKARTA": "DAERAH ISTIMEWA YOGYAKARTA",
+                        "DIY": "DAERAH ISTIMEWA YOGYAKARTA",
+                        "NTB": "NUSA TENGGARA BARAT",
+                        "NTT": "NUSA TENGGARA TIMUR"
+                    })
+                )
+
+                fallback_prov = (
+                    s_prov.value_counts()
+                    .head(12)
+                    .sort_values(ascending=True)
+                    .reset_index()
+                )
+                fallback_prov.columns = ["PROVINSI", "COUNT"]
+
+                fig_fallback = px.bar(
+                    fallback_prov,
+                    x="COUNT",
+                    y="PROVINSI",
+                    orientation="h"
+                )
+
+                fig_fallback.update_traces(marker_color="#237ece")
+                fig_fallback.update_layout(
+                    title="News Volume by Province",
+                    height=320,
+                    margin=dict(l=0, r=10, t=40, b=10),
+                    paper_bgcolor="#f8fafc",
+                    plot_bgcolor="#f8fafc",
+                    xaxis=dict(title="Article Count", showgrid=True),
+                    yaxis=dict(title="")
+                )
+
+                st.plotly_chart(
+                    fig_fallback,
+                    use_container_width=True,
+                    config={"displayModeBar": False}
+                )
         else:
             st.caption("Kolom data provinsi tidak ditemukan pada dataset.")
 

@@ -1,10 +1,18 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
+import ast
+import textwrap
+import html
 import plotly.graph_objects as go
 from datetime import datetime
 
 def render_deepdive_page(df_raw: pd.DataFrame):
+    # Initialize navigation state before it is accessed.
+    if "deepdive_selected_topic" not in st.session_state:
+        st.session_state.deepdive_selected_topic = None
+
     if df_raw is None or df_raw.empty:
         st.info("Data tidak tersedia.")
         return
@@ -27,8 +35,8 @@ def render_deepdive_page(df_raw: pd.DataFrame):
     )
 
     subtopic_col = (
-        "ISSUE_SUBTOPIC"
-        if "ISSUE_SUBTOPIC" in df_clean.columns
+        "SUBCATEGORY"
+        if "SUBCATEGORY" in df_clean.columns
         else None
     )
 
@@ -45,15 +53,34 @@ def render_deepdive_page(df_raw: pd.DataFrame):
     )
     media_col = next((c for c in ["CLEAN_URL", "MEDIA", "media", "SOURCE", "source", "MEDIA_DOMAIN"] if c in df_clean.columns), None)
     title_col = next((c for c in ["NEWS", "NEWS_SUMMARY", "title", "headline"] if c in df_clean.columns), None)
+    # Category and subcategory columns used by the NEWS ARTICLES section.
+    category_col = "NEWS_CATEGORY" if "NEWS_CATEGORY" in df_clean.columns else None
+    subcategory_col = "SUBCATEGORY" if "SUBCATEGORY" in df_clean.columns else None
+
+
+    # Detail metadata for each article in Topic Deep Dive.
+    location_col = next((
+        c for c in [
+            "LOCATION", "location", "LOCATIONS", "WILAYAH", "wilayah",
+            "PROVINSI", "provinsi", "PROVINCE", "province",
+            "REGION", "region"
+        ] if c in df_clean.columns
+    ), None)
+
+    subsidiary_col = next((
+        c for c in [
+            "SUBSIDIARY", "subsidiary", "ANAK_PERUSAHAAN",
+            "ANAK PERUSAHAAN", "anak_perusahaan", "COMPANY",
+            "company", "PERUSAHAAN", "perusahaan"
+        ] if c in df_clean.columns
+    ), None)
     
+    # NEWS_CATEGORY is the platform name from the dataset.
+    platform_col = "NEWS_CATEGORY" if "NEWS_CATEGORY" in df_clean.columns else None
+
     # Deteksi kolom provinsi / region
     prov_col = next((c for c in ["PROVINSI", "provinsi", "PROVINCE", "province", "REGION", "region", "WILAYAH", "wilayah"] if c in df_clean.columns), None)
 
-    # Inisialisasi State Sub-page & AI Generator
-    if "deepdive_selected_topic" not in st.session_state:
-        st.session_state.deepdive_selected_topic = None
-    if "ai_generated_dd" not in st.session_state:
-        st.session_state.ai_generated_dd = False
 
     # Scoped Clean Styling
     st.markdown("""
@@ -380,7 +407,6 @@ def render_deepdive_page(df_raw: pd.DataFrame):
 
                                 if st.button(t['name'], key=f"btn_nav_{t['id']}", help=t['name'], use_container_width=True):
                                     st.session_state.deepdive_selected_topic = t
-                                    st.session_state.ai_generated_dd = False
                                     st.rerun()
 
                 st.markdown("<p style='font-size:0.68rem; color:#94a3b8; text-align:center; margin-top:8px;'>Klik tombol topik untuk membuka detail subtopik</p>", unsafe_allow_html=True)
@@ -556,115 +582,489 @@ SELECTED TOPIC: {sel_t['name']}
 
         st.markdown(header_card_html, unsafe_allow_html=True)
 
-        sub_left, sub_right = st.columns([2.1, 1.1], gap="medium")
-
-        with sub_left:
-            st.markdown('<span class="dd-label" style="margin-bottom: 8px;">SUBCATEGORY BREAKDOWN BY SENTIMENT</span>', unsafe_allow_html=True)
-
-            if subtopic_col and sent_col and not df_sub_topic.empty:
-                top_subs_pie = df_sub_topic[subtopic_col].dropna().value_counts().head(5).index.tolist()
-                df_sub_break = df_sub_topic[df_sub_topic[subtopic_col].isin(top_subs_pie)].groupby([subtopic_col, sent_col]).size().unstack(fill_value=0).reset_index()
-            else:
-                df_sub_break = pd.DataFrame()
-
-            fig_sb = go.Figure()
-            if not df_sub_break.empty:
-                for s_name, s_col in [("Positive", "#10b981"), ("Neutral", "#94a3b8"), ("Negative", "#ef4444")]:
-                    found_col = next((c for c in df_sub_break.columns if s_name.lower() in str(c).lower()), None)
-                    if found_col:
-                        fig_sb.add_trace(go.Bar(
-                            x=df_sub_break[subtopic_col], y=df_sub_break[found_col],
-                            name=s_name, marker_color=s_col, width=0.18
-                        ))
-            else:
-                fig_sb.add_trace(go.Bar(x=["Sub A", "Sub B", "Sub C"], y=[30, 50, 25], name="Positive", marker_color="#10b981", width=0.18))
-                fig_sb.add_trace(go.Bar(x=["Sub A", "Sub B", "Sub C"], y=[45, 60, 35], name="Neutral", marker_color="#94a3b8", width=0.18))
-                fig_sb.add_trace(go.Bar(x=["Sub A", "Sub B", "Sub C"], y=[90, 55, 80], name="Negative", marker_color="#ef4444", width=0.18))
-
-            fig_sb.update_layout(
-                barmode="stack", 
-                height=170, 
-                margin=dict(l=0, r=0, t=18, b=0),
-                paper_bgcolor="#f8fafc", 
-                plot_bgcolor="#f8fafc",
-                xaxis=dict(showgrid=False, tickfont=dict(size=9, color="#94a3b8")),
-                yaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.9)", tickfont=dict(size=9, color="#94a3b8")),
-                showlegend=False
-            )
-            st.plotly_chart(
-                fig_sb, 
-                use_container_width=True, 
-                config={
-                    "displayModeBar": True,
-                    "modeBarButtons": [["zoom2d", "pan2d", "resetScale2d"]],
-                    "displaylogo": False
-                }
-            )
+        sub_right = st.container()
 
         with sub_right:
-            st.markdown('<span class="dd-label" style="margin-bottom: 8px;">GENERATE AI CRITICAL ROOT CAUSE & MITIGATION</span>', unsafe_allow_html=True)
+            st.markdown(
+                '<span class="dd-label" style="margin-bottom: 8px;">TOP KEYWORD</span>',
+                unsafe_allow_html=True
+            )
 
-            if st.button("Generate AI Summary", key="btn_gen_ai_dd", type="primary", use_container_width=True):
-                st.session_state.ai_generated_dd = True
+            # Always source the keyword from the dataset KEYWORD column.
+            keyword_col = next(
+                (c for c in ["KEYWORD", "keyword", "KEYWORDS", "keywords"]
+                 if c in df_sub_topic.columns),
+                None
+            )
 
-            if st.session_state.ai_generated_dd:
-                st.markdown(f"""
-                    <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; font-size: 0.72rem; color: #334155; line-height: 1.45; margin-top: 8px;">
-                        <p style="color: #1d4ed8; font-weight: 700; margin-bottom: 4px;">Root Cause Summary</p>
-                        <p style="margin-bottom: 8px;">Lonjakan isu pada <b>{sel_t['name']}</b> didorong oleh akumulasi pemberitaan terkait subtopik <b>SUBCATEGORY</b>.</p>
-                        <p style="color: #1d4ed8; font-weight: 700; margin-bottom: 4px;">Suggested Mitigation</p>
-                        <p style="margin-bottom: 2px;">→ Action 1: Klarifikasi proaktif melalui media kredibel Tier 1</p>
-                        <p>→ Action 2: Monitor tren eskalasi berita secara berkala</p>
+            top_keywords = []
+
+            keyword_stopwords = {
+                "a", "an", "the", "and", "or", "of", "to", "in", "on", "for",
+                "with", "from", "by", "at", "is", "are", "as", "be", "this",
+                "that", "it", "its", "was", "were", "has", "have", "had",
+                "yang", "dan", "atau", "dari", "ke", "di", "untuk", "dengan",
+                "pada", "dalam", "ini", "itu", "adalah", "akan", "telah",
+                "sebagai", "oleh", "tidak", "juga", "lebih", "terhadap"
+            }
+
+            def _extract_keyword_items(value):
+                if pd.isna(value):
+                    return []
+
+                raw = str(value).strip()
+                if not raw or raw.lower() in {"nan", "none", "null"}:
+                    return []
+
+                parsed = None
+                if raw.startswith("[") and raw.endswith("]"):
+                    try:
+                        parsed = ast.literal_eval(raw)
+                    except (ValueError, SyntaxError):
+                        parsed = None
+
+                items = (
+                    parsed
+                    if isinstance(parsed, (list, tuple, set))
+                    else re.split(r"[,;|\n]+", raw)
+                )
+
+                result = []
+                for item in items:
+                    kw = str(item).strip(" []'\"")
+                    kw = re.sub(r"\s+", " ", kw).strip()
+
+                    if (
+                        not kw
+                        or len(kw) < 2
+                        or kw.isdigit()
+                        or kw.casefold() in keyword_stopwords
+                        or not re.search(r"[A-Za-zÀ-ÿ]", kw)
+                    ):
+                        continue
+
+                    result.append(kw)
+
+                return result
+
+            if keyword_col and not df_sub_topic.empty:
+                keyword_items = []
+
+                for value in df_sub_topic[keyword_col].dropna():
+                    keyword_items.extend(_extract_keyword_items(value))
+
+                if keyword_items:
+                    counts = {}
+                    display_names = {}
+
+                    for kw in keyword_items:
+                        normalized = kw.casefold()
+                        counts[normalized] = counts.get(normalized, 0) + 1
+                        display_names.setdefault(normalized, kw)
+
+                    ranked_keywords = sorted(
+                        counts.items(), key=lambda item: (-item[1], display_names[item[0]].casefold())
+                    )[:3]
+
+                    top_keywords = [
+                        (display_names[normalized], count)
+                        for normalized, count in ranked_keywords
+                    ]
+
+            if not top_keywords:
+                top_keywords = [("N/A", 0)]
+
+            keyword_rows = "".join(
+                f"""
+                <div style="display:flex; align-items:center; gap:12px;
+                            padding:11px 0; border-bottom:{'1px solid #e2e8f0' if idx < len(top_keywords)-1 else 'none'};">
+                    <div style="min-width:26px; height:26px; border-radius:50%;
+                                background:#e2e8f0; color:#475569; display:flex;
+                                align-items:center; justify-content:center;
+                                font-size:0.72rem; font-weight:800;">
+                        {idx + 1}
                     </div>
-                """, unsafe_allow_html=True)
+                    <div style="flex:1; min-width:0; font-size:0.96rem;
+                                color:#1e293b; font-weight:800; line-height:1.3;
+                                word-break:break-word;">
+                        {html.escape(str(keyword))}
+                    </div>
+                    <div style="font-size:0.67rem; color:#94a3b8; white-space:nowrap;">
+                        {count:,} occurrence(s)
+                    </div>
+                </div>
+                """
+                for idx, (keyword, count) in enumerate(top_keywords)
+            )
+
+            st.html(
+                textwrap.dedent(f"""
+                    <div style="background:#f8fafc; border:1px solid #e2e8f0;
+                                border-radius:10px; padding:12px 16px;">
+                        <div style="font-size:0.68rem; color:#64748b;
+                                    font-weight:800; text-transform:uppercase;
+                                    margin-bottom:2px;">
+                            Top 3 Keywords
+                        </div>
+                        {keyword_rows}
+                    </div>
+                """).strip()
+            )
 
         st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
-        c_hdr_art, c_flt_art = st.columns([3.8, 1.0])
+
+        st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+
+        c_hdr_art, c_search_art, c_flt_art = st.columns([2.5, 2.3, 1.2], gap="medium")
+
         with c_hdr_art:
-            st.markdown(f'<span class="dd-label">NEWS ARTICLES (TOPIC: {sel_t["name"].upper()})</span>', unsafe_allow_html=True)
+            st.markdown(
+                f'<span class="dd-label">NEWS ARTICLES — {sel_t["name"].upper()}</span>',
+                unsafe_allow_html=True
+            )
+
+        with c_search_art:
+            art_search = st.text_input(
+                "Search News Articles",
+                placeholder="Search keyword or news summary...",
+                label_visibility="collapsed",
+                key="search_news_articles_dd"
+            )
+
         with c_flt_art:
             art_sent_opts = ["All Sentiment", "Positive", "Neutral", "Negative"]
-            sel_art_sent = st.selectbox("Sentiment Filter", options=art_sent_opts, index=0, label_visibility="collapsed", key="sel_art_sent_dd")
+            sel_art_sent = st.selectbox(
+                "Sentiment Filter",
+                options=art_sent_opts,
+                index=0,
+                label_visibility="collapsed",
+                key="sel_art_sent_dd"
+            )
 
-        df_art = df_sub_topic.dropna(subset=[title_col]).copy() if title_col and not df_sub_topic.empty else pd.DataFrame()
+        # NEWS ARTICLES hanya membutuhkan data yang memiliki NEWS_SUMMARY atau KEYWORD.
+        article_required_col = next(
+            (c for c in ["NEWS_SUMMARY", "news_summary", "KEYWORD", "keyword"]
+             if c in df_sub_topic.columns),
+            None
+        )
+        df_art = (
+            df_sub_topic.dropna(subset=[article_required_col]).copy()
+            if article_required_col and not df_sub_topic.empty
+            else pd.DataFrame()
+        )
+
         if not df_art.empty and sel_art_sent != "All Sentiment" and sent_col:
-            df_art = df_art[
-            df_art[sent_col] == sel_art_sent
-        ]
+            df_art = df_art[df_art[sent_col] == sel_art_sent]
+
+        # Search articles by keyword or full news summary.
+        if not df_art.empty and art_search.strip():
+            search_term = art_search.strip().lower()
+
+            search_cols = [
+                c for c in ["KEYWORD", "NEWS_SUMMARY", "NEWS_CATEGORY",
+                            "SUBCATEGORY", "LOCATION", "WILAYAH", "PROVINSI"]
+                if c in df_art.columns
+            ]
+
+            if search_cols:
+                search_mask = pd.Series(False, index=df_art.index)
+                for col in search_cols:
+                    search_mask = search_mask | df_art[col].fillna("").astype(str).str.lower().str.contains(
+                        search_term, regex=False
+                    )
+                df_art = df_art[search_mask]
 
         if not df_art.empty:
-            df_show = pd.DataFrame()
-            df_show["Article"] = df_art[title_col].astype(str).str.replace(r'[\r\n]+', ' ', regex=True)
-            
-            if media_col:
-                df_show["Media Source"] = (
-                    df_art[media_col].astype(str)
-                    .str.replace("https://", "", regex=False)
-                    .str.replace("http://", "", regex=False)
-                    .str.replace("www.", "", regex=False)
-                    .str.split("/").str[0]
-                )
-            else:
-                df_show["Media Source"] = "N/A"
-                
+            # Tampilkan hanya delapan berita pertama, diurutkan dari yang paling baru.
             if "NEWS_DATE" in df_art.columns:
-                df_show["Date"] = pd.to_datetime(df_art["NEWS_DATE"], errors="coerce").dt.strftime("%Y-%m-%d")
-            else:
-                df_show["Date"] = "-"
-                
-            df_show["Sentiment"] = df_art[sent_col]
+                df_art = df_art.sort_values("NEWS_DATE", ascending=False)
 
-            st.dataframe(
-                df_show,
-                use_container_width=True,
-                height=420,
-                hide_index=True,
-                column_config={
-                    "Article": st.column_config.TextColumn("Article", width="large"),
-                    "Media Source": st.column_config.TextColumn("Media Source", width="medium"),
-                    "Date": st.column_config.TextColumn("Date", width="small"),
-                    "Sentiment": st.column_config.TextColumn("Sentiment", width="small"),
-                }
+            df_art = df_art.head(8)
+
+            link_col = next(
+                (
+                    c for c in [
+                        "URL", "url", "LINK", "link",
+                        "NEWS_URL", "news_url", "CLEAN_URL"
+                    ]
+                    if c in df_art.columns
+                ),
+                None
             )
+
+            # Satu berita horizontal/full-width per baris.
+            for _, row in df_art.iterrows():
+                sentiment_value = (
+                    str(row.get(sent_col, "Neutral")).strip().capitalize()
+                    if sent_col else "Neutral"
+                )
+
+                if sentiment_value == "Positive":
+                    sentiment_color = "#15803d"
+                    sentiment_bg = "#dcfce7"
+                elif sentiment_value == "Negative":
+                    sentiment_color = "#dc2626"
+                    sentiment_bg = "#fee2e2"
+                else:
+                    sentiment_color = "#64748b"
+                    sentiment_bg = "#f1f5f9"
+
+                # KEYWORD menjadi judul utama kartu, bukan NEWS/NEWS_SUMMARY.
+                article_keyword = ""
+                if keyword_col:
+                    raw_keyword = row.get(keyword_col, "")
+                    if pd.notna(raw_keyword):
+                        article_keyword = str(raw_keyword).strip()
+
+                if not article_keyword or article_keyword.lower() in {"nan", "none", "null"}:
+                    article_keyword = "News Article"
+
+                # NEWS_SUMMARY menjadi isi/ringkasan berita.
+                summary_col = next(
+                    (
+                        c for c in [
+                            "NEWS_SUMMARY", "news_summary",
+                            "SUMMARY", "summary"
+                        ]
+                        if c in df_art.columns
+                    ),
+                    None
+                )
+
+                article_summary = ""
+                if summary_col:
+                    raw_summary = row.get(summary_col, "")
+                    if pd.notna(raw_summary):
+                        article_summary = re.sub(
+                            r"[\r\n]+", " ", str(raw_summary)
+                        ).strip()
+
+                if not article_summary:
+                    article_summary = "No news summary available."
+
+                # Media
+                media_name = "Unknown Source"
+                if media_col:
+                    media_name = str(
+                        row.get(media_col, "Unknown Source")
+                    ).strip()
+                    media_name = re.sub(
+                        r"^https?://", "", media_name, flags=re.I
+                    ).replace("www.", "").split("/")[0]
+
+                # Date and time
+                article_datetime = "-"
+                if "NEWS_DATE" in df_art.columns:
+                    parsed_date = pd.to_datetime(
+                        row.get("NEWS_DATE"), errors="coerce"
+                    )
+                    if not pd.isna(parsed_date):
+                        article_datetime = parsed_date.strftime(
+                            "%d %B %Y • %H:%M"
+                        )
+
+                # Location
+                location_name = "-"
+                if location_col:
+                    raw_location = row.get(location_col, "")
+                    if pd.notna(raw_location):
+                        location_name = str(raw_location).strip()
+                    if not location_name or location_name.lower() in {
+                        "nan", "none", "null"
+                    }:
+                        location_name = "-"
+
+                # Tier
+                tier_value = "-"
+                if tier_col:
+                    raw_tier = row.get(tier_col, "")
+                    if pd.notna(raw_tier):
+                        tier_value = str(raw_tier).strip()
+                    if not tier_value or tier_value.lower() in {
+                        "nan", "none", "null"
+                    }:
+                        tier_value = "-"
+
+                # Anak perusahaan, jika ada.
+                subsidiary_value = ""
+                if subsidiary_col:
+                    raw_subsidiary = row.get(subsidiary_col, "")
+                    if pd.notna(raw_subsidiary):
+                        subsidiary_value = str(raw_subsidiary).strip()
+                    if subsidiary_value.lower() in {
+                        "nan", "none", "null"
+                    }:
+                        subsidiary_value = ""
+
+                # Category / subcategory langsung dari dataset.
+                category_value = "-"
+                if category_col:
+                    raw_category = row.get(category_col, "")
+                    if pd.notna(raw_category):
+                        category_value = str(raw_category).strip()
+                    if category_value.lower() in {"nan", "none", "null", ""}:
+                        category_value = "-"
+
+                subcategory_value = "-"
+                if subcategory_col:
+                    raw_subcategory = row.get(subcategory_col, "")
+                    if pd.notna(raw_subcategory):
+                        subcategory_value = str(raw_subcategory).strip()
+                    if subcategory_value.lower() in {"nan", "none", "null", ""}:
+                        subcategory_value = "-"
+
+                # Article URL
+                article_url = ""
+                if link_col:
+                    raw_url = str(row.get(link_col, "")).strip()
+                    if raw_url.lower() not in {"nan", "none", ""}:
+                        article_url = raw_url
+                        if not article_url.startswith(("http://", "https://")):
+                            article_url = "https://" + article_url
+
+                safe_keyword = html.escape(article_keyword)
+                safe_summary = html.escape(article_summary)
+                platform_value = "-"
+                if platform_col:
+                    raw_platform = row.get(platform_col, "")
+                    if pd.notna(raw_platform):
+                        platform_value = str(raw_platform).strip()
+                    if platform_value.lower() in {"nan", "none", "null", ""}:
+                        platform_value = "-"
+
+                safe_platform = html.escape(platform_value)
+                safe_media = html.escape(media_name)
+                safe_datetime = html.escape(article_datetime)
+                safe_location = html.escape(location_name)
+                safe_tier = html.escape(tier_value)
+                safe_category = html.escape(category_value)
+                safe_subcategory = html.escape(subcategory_value)
+
+                subsidiary_html = ""
+                if subsidiary_value:
+                    subsidiary_html = f"""
+                        <div style="display:flex; flex-direction:column; min-width:145px;">
+                            <span style="font-size:0.60rem; color:#94a3b8; font-weight:800; text-transform:uppercase;">
+                                Subsidiary
+                            </span>
+                            <span style="font-size:0.70rem; color:#334155; font-weight:650; margin-top:2px;">
+                                {html.escape(subsidiary_value)}
+                            </span>
+                        </div>
+                    """
+
+                link_html = ""
+                if article_url:
+                    safe_url = html.escape(article_url, quote=True)
+                    link_html = f"""
+                        <a href="{safe_url}" target="_blank" rel="noopener noreferrer"
+                           style="font-size:0.66rem; font-weight:700; color:#237ece; text-decoration:none; white-space:nowrap;">
+                            Read Article ↗
+                        </a>
+                    """
+
+                card_html = f"""
+                    <div style="background:#ffffff; border:1px solid #e2e8f0;
+                                border-radius:12px; padding:17px 19px; margin-bottom:13px;
+                                box-shadow:0 1px 4px rgba(15,23,42,0.05);">
+
+                        <div style="display:flex; align-items:center; justify-content:space-between;
+                                    gap:14px; margin-bottom:9px;">
+                            <span style="display:inline-block; background:{sentiment_bg};
+                                         color:{sentiment_color}; border-radius:999px;
+                                         padding:4px 10px; font-size:0.62rem; font-weight:800;">
+                                {html.escape(sentiment_value)}
+                            </span>
+
+                            <span style="font-size:0.64rem; color:#94a3b8; font-weight:650;">
+                                {safe_datetime}
+                            </span>
+                        </div>
+
+                        <!-- KEYWORD as the article-style heading -->
+                        <div style="font-size:1.00rem; line-height:1.38;
+                                    font-weight:800; color:#1e3a8a;
+                                    margin-bottom:8px;">
+                            {safe_keyword}
+                        </div>
+
+                        <!-- NEWS_SUMMARY as the article content -->
+                        <div style="font-size:0.82rem; line-height:1.62;
+                                    font-weight:500; color:#475569;
+                                    margin-bottom:13px;
+                                    white-space:normal;
+                                    display:-webkit-box;
+                                    -webkit-box-orient:vertical;
+                                    -webkit-line-clamp:12;
+                                    overflow:hidden;
+                                    max-height:calc(12 * 1.62em);
+                                    height:auto;
+                                    overflow-wrap:anywhere;
+                                    word-break:normal;">
+                            {safe_summary}
+                        </div>
+
+                        <div style="display:flex; align-items:flex-start; flex-wrap:wrap;
+                                    gap:22px; padding-top:11px;
+                                    border-top:1px solid #f1f5f9;">
+
+                            <div style="display:flex; flex-direction:column; min-width:125px;">
+                                <span style="font-size:0.60rem; color:#94a3b8; font-weight:800; text-transform:uppercase;">
+                                    Category
+                                </span>
+                                <span style="font-size:0.70rem; color:#334155; font-weight:650; margin-top:2px;">
+                                    {safe_category}
+                                </span>
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; min-width:125px;">
+                                <span style="font-size:0.60rem; color:#94a3b8; font-weight:800; text-transform:uppercase;">
+                                    Subcategory
+                                </span>
+                                <span style="font-size:0.70rem; color:#334155; font-weight:650; margin-top:2px;">
+                                    {safe_subcategory}
+                                </span>
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; min-width:125px;">
+                                <span style="font-size:0.60rem; color:#94a3b8; font-weight:800; text-transform:uppercase;">
+                                    Platform
+                                </span>
+                                <span style="font-size:0.70rem; color:#334155; font-weight:650; margin-top:2px;">
+                                    {safe_platform}
+                                </span>
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; min-width:125px;">
+                                <span style="font-size:0.60rem; color:#94a3b8; font-weight:800; text-transform:uppercase;">
+                                    Location
+                                </span>
+                                <span style="font-size:0.70rem; color:#334155; font-weight:650; margin-top:2px;">
+                                    {safe_location}
+                                </span>
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; min-width:90px;">
+                                <span style="font-size:0.60rem; color:#94a3b8; font-weight:800; text-transform:uppercase;">
+                                    Tier
+                                </span>
+                                <span style="font-size:0.70rem; color:#334155; font-weight:650; margin-top:2px;">
+                                    {safe_tier}
+                                </span>
+                            </div>
+
+                            {subsidiary_html}
+
+                            <div style="margin-left:auto; align-self:center;">
+                                {link_html}
+                            </div>
+                        </div>
+                    </div>
+                """
+
+                st.html(textwrap.dedent(card_html).strip())
         else:
             st.info("Tidak ada artikel untuk filter sentimen ini.")
+

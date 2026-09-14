@@ -1,656 +1,3309 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+import re
+import ast
+import textwrap
+import html
 
-def render_sentiment_analysis_page(df_raw: pd.DataFrame):
-    if df_raw is None or df_raw.empty:
-        st.info("Data is not available.")
+
+# =============================================================
+# HELPER: HTML RENDERING
+# =============================================================
+def render_html(content):
+    """
+    Render custom HTML using Streamlit's HTML renderer.
+    This prevents multiline HTML from appearing as code text.
+    """
+    content = textwrap.dedent(content).strip()
+    st.html(content)
+
+
+# =============================================================
+# HELPER: SENTIMENT STANDARDIZATION
+# =============================================================
+def standardize_sentiment(value):
+    value = str(value).strip().lower()
+
+    if value in {
+        "positive",
+        "positif",
+        "pos",
+        "good",
+        "baik",
+        "1"
+    }:
+        return "Positive"
+
+    if value in {
+        "negative",
+        "negatif",
+        "neg",
+        "bad",
+        "buruk",
+        "-1"
+    }:
+        return "Negative"
+
+    if value in {
+        "neutral",
+        "netral",
+        "neu",
+        "0"
+    }:
+        return "Neutral"
+
+    if "positive" in value or "positif" in value:
+        return "Positive"
+
+    if "negative" in value or "negatif" in value:
+        return "Negative"
+
+    return "Neutral"
+
+
+# =============================================================
+# HELPER: EXTRACT KEYWORDS
+# =============================================================
+def extract_keywords(series):
+    """
+    Extract keywords from KEYWORD column.
+
+    Supported formats:
+
+    Project
+    Project, Growth, Investment
+    Project; Growth; Investment
+    Project | Growth | Investment
+    Project
+    Growth
+    Investment
+
+    ['Project', 'Growth', 'Investment']
+    """
+
+    keywords = []
+
+    if series is None:
+        return keywords
+
+    for value in series.dropna():
+
+        text = str(value).strip()
+
+        if not text:
+            continue
+
+        # -----------------------------------------------------
+        # Python list format
+        # -----------------------------------------------------
+        if text.startswith("[") and text.endswith("]"):
+
+            try:
+                parsed = ast.literal_eval(text)
+
+                if isinstance(
+                    parsed,
+                    (list, tuple, set)
+                ):
+
+                    for item in parsed:
+
+                        item = str(item).strip()
+
+                        if (
+                            item
+                            and item.lower()
+                            not in {
+                                "nan",
+                                "none",
+                                "null",
+                                "-"
+                            }
+                        ):
+                            keywords.append(item)
+
+                    continue
+
+            except Exception:
+                pass
+
+        # -----------------------------------------------------
+        # Multiple separator format
+        # -----------------------------------------------------
+        split_values = re.split(
+            r"[,;|\n]+",
+            text
+        )
+
+        for item in split_values:
+
+            item = item.strip()
+
+            if not item:
+                continue
+
+            if item.lower() in {
+                "nan",
+                "none",
+                "null",
+                "-"
+            }:
+                continue
+
+            keywords.append(item)
+
+    return keywords
+
+
+# =============================================================
+# HELPER: GET TOP KEYWORD
+# =============================================================
+def get_top_keyword(
+    df,
+    keyword_col,
+    sentiment=None
+):
+    """
+    Return the single most frequent keyword.
+
+    If sentiment is provided, only articles with that
+    sentiment are considered.
+    """
+
+    if (
+        df is None
+        or df.empty
+        or not keyword_col
+    ):
+        return None, 0
+
+    df_keyword = df.copy()
+
+    # ---------------------------------------------------------
+    # Filter sentiment
+    # ---------------------------------------------------------
+    if sentiment is not None:
+
+        if "SENTIMENT" in df_keyword.columns:
+
+            df_keyword = df_keyword[
+                df_keyword[
+                    "SENTIMENT"
+                ]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == sentiment.lower()
+            ]
+
+    if df_keyword.empty:
+        return None, 0
+
+    # ---------------------------------------------------------
+    # Extract keywords
+    # ---------------------------------------------------------
+    raw_keywords = extract_keywords(
+        df_keyword[keyword_col]
+    )
+
+    if not raw_keywords:
+        return None, 0
+
+    normalized_keywords = []
+    display_lookup = {}
+
+    for keyword in raw_keywords:
+
+        clean_keyword = str(
+            keyword
+        ).strip()
+
+        if not clean_keyword:
+            continue
+
+        normalized = (
+            clean_keyword.lower()
+        )
+
+        if normalized in {
+            "nan",
+            "none",
+            "null",
+            "-"
+        }:
+            continue
+
+        normalized_keywords.append(
+            normalized
+        )
+
+        if normalized not in display_lookup:
+
+            display_lookup[
+                normalized
+            ] = clean_keyword
+
+    if not normalized_keywords:
+        return None, 0
+
+    counts = (
+        pd.Series(
+            normalized_keywords
+        )
+        .value_counts()
+    )
+
+    top_keyword = counts.index[0]
+    top_count = int(
+        counts.iloc[0]
+    )
+
+    return (
+        display_lookup.get(
+            top_keyword,
+            top_keyword
+        ),
+        top_count
+    )
+
+
+# =============================================================
+# HELPER: PERIOD CALLBACK
+# =============================================================
+def update_period_from_preset():
+    """
+    Update the calendar range when the preset period changes.
+    """
+
+    if (
+        "sa_period" not in st.session_state
+        or "sa_dataset_max_date"
+        not in st.session_state
+    ):
+        return
+
+    latest_date = pd.Timestamp(
+        st.session_state[
+            "sa_dataset_max_date"
+        ]
+    )
+
+    selected_period = (
+        st.session_state[
+            "sa_period"
+        ]
+    )
+
+    if selected_period == "1 Month":
+
+        start_date = (
+            latest_date
+            - pd.DateOffset(
+                months=1
+            )
+        ).date()
+
+    elif selected_period == "3 Months":
+
+        start_date = (
+            latest_date
+            - pd.DateOffset(
+                months=3
+            )
+        ).date()
+
+    elif selected_period == "1 Year":
+
+        start_date = (
+            latest_date
+            - pd.DateOffset(
+                years=1
+            )
+        ).date()
+
+    else:
+
+        return
+
+    st.session_state[
+        "sa_date_range"
+    ] = (
+        start_date,
+        latest_date.date()
+    )
+
+
+# =============================================================
+# MAIN PAGE
+# =============================================================
+def render_sentiment_analysis_page(
+    df_raw: pd.DataFrame
+):
+
+    # =========================================================
+    # 0. CHECK DATA
+    # =========================================================
+    if (
+        df_raw is None
+        or df_raw.empty
+    ):
+
+        st.info(
+            "Data is not available."
+        )
+
         return
 
     df_clean = df_raw.copy()
+
+    # =========================================================
+    # 1. STANDARDIZE DATE
+    # =========================================================
     if "NEWS_DATE" in df_clean.columns:
-        df_clean["NEWS_DATE"] = pd.to_datetime(df_clean["NEWS_DATE"], errors="coerce")
+
+        df_clean[
+            "NEWS_DATE"
+        ] = pd.to_datetime(
+            df_clean[
+                "NEWS_DATE"
+            ],
+            errors="coerce"
+        )
+
     elif "news_date" in df_clean.columns:
-        df_clean["NEWS_DATE"] = pd.to_datetime(df_clean["news_date"], errors="coerce")
 
-    # Standardize dataset columns
+        df_clean[
+            "NEWS_DATE"
+        ] = pd.to_datetime(
+            df_clean[
+                "news_date"
+            ],
+            errors="coerce"
+        )
 
+    # =========================================================
+    # 2. DATASET COLUMNS
+    # =========================================================
     sent_col = (
         "SENTIMENT"
-        if "SENTIMENT" in df_clean.columns
+        if "SENTIMENT"
+        in df_clean.columns
         else None
     )
 
     topic_col = (
         "ISSUE_TOPIC"
-        if "ISSUE_TOPIC" in df_clean.columns
+        if "ISSUE_TOPIC"
+        in df_clean.columns
         else None
     )
 
     subtopic_col = (
         "ISSUE_SUBTOPIC"
-        if "ISSUE_SUBTOPIC" in df_clean.columns
+        if "ISSUE_SUBTOPIC"
+        in df_clean.columns
         else None
     )
 
     tier_col = (
         "TIER"
-        if "TIER" in df_clean.columns
+        if "TIER"
+        in df_clean.columns
         else None
     )
-    media_col = next((c for c in ["CLEAN_URL", "clean_url", "MEDIA", "media", "SOURCE", "source", "MEDIA_DOMAIN"] if c in df_clean.columns), None)
-    title_col = next((c for c in ["NEWS", "NEWS_SUMMARY", "news_title", "title", "headline"] if c in df_clean.columns), None)
 
-    # Scoped CSS
-    st.markdown("""
+    keyword_col = (
+        "KEYWORD"
+        if "KEYWORD"
+        in df_clean.columns
+        else None
+    )
+
+    media_col = next(
+        (
+            c
+            for c in [
+                "CLEAN_URL",
+                "clean_url",
+                "MEDIA",
+                "media",
+                "SOURCE",
+                "source",
+                "MEDIA_DOMAIN"
+            ]
+            if c in df_clean.columns
+        ),
+        None
+    )
+
+    title_col = next(
+        (
+            c
+            for c in [
+                "NEWS",
+                "NEWS_SUMMARY",
+                "news_title",
+                "title",
+                "headline"
+            ]
+            if c in df_clean.columns
+        ),
+        None
+    )
+
+    # =========================================================
+    # 3. STANDARDIZE SENTIMENT
+    # =========================================================
+    if sent_col:
+
+        df_clean[
+            sent_col
+        ] = df_clean[
+            sent_col
+        ].apply(
+            standardize_sentiment
+        )
+
+    # =========================================================
+    # 4. CSS
+    # =========================================================
+    render_html(
+        """
         <style>
-            div[data-testid="stVerticalBlockBorderWrapper"],
-            .ov-transparent-section {
-                border: none !important;
-                box-shadow: none !important;
-                background: transparent !important;
-                background-color: transparent !important;
-            }
-            .ov-card-title {
-                font-size: 0.78rem !important;
-                font-weight: 800 !important;
-                color: #475569 !important;
-                letter-spacing: 0.05em !important;
-                text-transform: uppercase !important;
-                margin-bottom: 12px !important;
-                display: block !important;
-            }
-            .formula-pill-noborder {
-                border-radius: 8px !important;
-                padding: 8px 12px !important;
-                display: flex !important;
-                flex-direction: column !important;
-                align-items: center !important;
-                justify-content: center !important;
-                min-width: 72px !important;
-                border: none !important;
-            }
-            .spike-metric-card {
-                background: #ffffff !important;
-                border: none !important;
-                border-radius: 12px !important;
-                padding: 14px 16px !important;
-                box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03) !important;
-            }
-            .badge-pos {
-                background: #ecfdf5 !important;
-                color: #059669 !important;
-                border: 1px solid #a7f3d0 !important;
-                padding: 4px 12px !important;
-                border-radius: 20px !important;
-                font-weight: 700 !important;
-                display: inline-block !important;
-                margin: 3px !important;
-            }
-            .badge-neg {
-                background: #fef2f2 !important;
-                color: #dc2626 !important;
-                border: 1px solid #fecaca !important;
-                padding: 4px 12px !important;
-                border-radius: 20px !important;
-                font-weight: 700 !important;
-                display: inline-block !important;
-                margin: 3px !important;
-            }
-            div[data-testid="stPlotlyChart"] {
-                background-color: #f8fafc !important;
-                border-radius: 8px !important;
-                border: none !important;
-                padding: 0 !important;
-                margin: 0 !important;
-            }
+
+        .sa-card-title {
+            font-size: 0.78rem;
+            font-weight: 800;
+            color: #475569;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        .formula-pill-noborder {
+            border-radius: 8px;
+            padding: 8px 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-width: 72px;
+            border: none;
+        }
+
+        .spike-metric-card {
+            background: #ffffff;
+            border: none;
+            border-radius: 12px;
+            padding: 14px 16px;
+            box-shadow:
+                0 4px 14px
+                rgba(15, 23, 42, 0.03);
+            min-height: 105px;
+            box-sizing: border-box;
+        }
+
+        .keyword-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-sizing: border-box;
+        }
+
+        .keyword-label {
+            font-size: 0.68rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .keyword-name {
+            font-size: 1rem;
+            font-weight: 800;
+            color: #0f172a;
+            flex: 1;
+        }
+
+        .keyword-count {
+            font-size: 0.70rem;
+            font-weight: 700;
+            color: #64748b;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 4px 9px;
+        }
+
+        .period-info {
+            font-size: 0.70rem;
+            color: #64748b;
+            margin-top: 4px;
+        }
+
         </style>
-    """, unsafe_allow_html=True)
+        """
+    )
 
-    # -------------------------------------------------------------
-    # 1. TOP FILTERS PREPARATION
-    # -------------------------------------------------------------
-    month_options = ["All Months"]
-    if "NEWS_DATE" in df_clean.columns and not df_clean["NEWS_DATE"].dropna().empty:
-        df_clean["YEAR_MONTH"] = df_clean["NEWS_DATE"].dt.to_period("M")
-        sorted_periods = sorted(df_clean["YEAR_MONTH"].dropna().unique(), reverse=True)
-        month_options.extend([p.strftime("%B %Y") for p in sorted_periods])
+    # =========================================================
+    # 5. DATASET DATE LIMITS
+    # =========================================================
+    valid_dates = (
+        df_clean[
+            "NEWS_DATE"
+        ]
+        .dropna()
+        if "NEWS_DATE"
+        in df_clean.columns
+        else pd.Series(
+            dtype="datetime64[ns]"
+        )
+    )
 
-    tier_opts = ["All Media Tier"] + sorted(list(df_clean[tier_col].dropna().astype(str).unique())) if tier_col else ["All Media Tier"]
+    if valid_dates.empty:
 
-    selected_month = st.session_state.get("sa_month", "All Months")
-    selected_tier = st.session_state.get("sa_tier", "All Media Tier")
+        dataset_min_date = None
+        dataset_max_date = None
 
-    df_filtered = df_clean.copy()
-    if selected_month != "All Months" and "NEWS_DATE" in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered["NEWS_DATE"].dt.strftime("%B %Y") == selected_month]
-    if selected_tier != "All Media Tier" and tier_col:
-        df_filtered = df_filtered[df_filtered[tier_col].astype(str) == selected_tier]
-
-    # -------------------------------------------------------------
-    # 2. NSS CALCULATION
-    # -------------------------------------------------------------
-    total_news = len(df_filtered)
-    pos_count = len(df_filtered[df_filtered[sent_col].astype(str).str.lower().str.contains("pos")]) if sent_col else 0
-    neg_count = len(df_filtered[df_filtered[sent_col].astype(str).str.lower().str.contains("neg")]) if sent_col else 0
-    nss_score = int(round(((pos_count - neg_count) / total_news) * 100)) if total_news > 0 else 0
-
-    if nss_score < 0:
-        bar_gradient = "linear-gradient(180deg, #f87171 0%, #dc2626 100%)"
-        accent_color = "#dc2626"
-        nss_card_bg, nss_card_border, nss_title_color, nss_text_color = "#fef2f2", "#fca5a5", "#991b1b", "#dc2626"
-        nss_spark_color, nss_badge_bg = "#ef4444", "#fee2e2"
-        nss_str = f"{nss_score}%"
     else:
-        bar_gradient = "linear-gradient(180deg, #34d399 0%, #16a34a 100%)"
-        accent_color = "#16a34a"
-        nss_card_bg, nss_card_border, nss_title_color, nss_text_color = "#f0fdf4", "#86efac", "#166534", "#15803d"
-        nss_spark_color, nss_badge_bg = "#16a34a", "#dcfce7"
-        nss_str = f"+{nss_score}%"
 
-    # -------------------------------------------------------------
-    # 3. PAGE HEADER
-    # -------------------------------------------------------------
-    c_hdr, c_f_month, c_f_tier = st.columns([2.6, 1.15, 1.15], gap="medium")
+        dataset_min_date = (
+            valid_dates.min()
+            .date()
+        )
+
+        dataset_max_date = (
+            valid_dates.max()
+            .date()
+        )
+
+        st.session_state[
+            "sa_dataset_max_date"
+        ] = dataset_max_date
+
+    # =========================================================
+    # 6. PERIOD OPTIONS
+    # =========================================================
+    period_options = [
+        "1 Month",
+        "3 Months",
+        "1 Year"
+    ]
+
+    if (
+        "sa_period"
+        not in st.session_state
+    ):
+
+        st.session_state[
+            "sa_period"
+        ] = "1 Month"
+
+    selected_period = (
+        st.session_state[
+            "sa_period"
+        ]
+    )
+
+    # =========================================================
+    # 7. INITIAL CALENDAR RANGE
+    # =========================================================
+    if (
+        dataset_min_date is not None
+        and dataset_max_date is not None
+    ):
+
+        if (
+            "sa_date_range"
+            not in st.session_state
+        ):
+
+            initial_start = (
+                pd.Timestamp(
+                    dataset_max_date
+                )
+                - pd.DateOffset(
+                    months=1
+                )
+            ).date()
+
+            initial_start = max(
+                initial_start,
+                dataset_min_date
+            )
+
+            st.session_state[
+                "sa_date_range"
+            ] = (
+                initial_start,
+                dataset_max_date
+            )
+
+    # =========================================================
+    # 8. TIER OPTIONS
+    # =========================================================
+    if tier_col:
+
+        tier_opts = [
+            "All Media Tier"
+        ] + sorted(
+            df_clean[
+                tier_col
+            ]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+
+    else:
+
+        tier_opts = [
+            "All Media Tier"
+        ]
+
+    if (
+        "sa_tier"
+        not in st.session_state
+    ):
+
+        st.session_state[
+            "sa_tier"
+        ] = "All Media Tier"
+
+    selected_tier = (
+        st.session_state[
+            "sa_tier"
+        ]
+    )
+
+    # =========================================================
+    # TOP SPACING
+    # =========================================================
+    # Add a little breathing room between the fixed top bar
+    # and the Sentiment Analysis content.
+    st.markdown(
+        "<div style='height:18px;'></div>",
+        unsafe_allow_html=True
+    )
+
+    # =========================================================
+    # 9. HEADER
+    # =========================================================
+    c_hdr, c_period, c_tier = st.columns(
+        [2.45, 1.2, 1.2],
+        gap="medium"
+    )
+
+    # ---------------------------------------------------------
+    # HEADER TITLE
+    # ---------------------------------------------------------
     with c_hdr:
-        st.markdown(f"""
-            <div style="display: flex; align-items: center; gap: 12px; height: 100%; min-height: 48px;">
-                <div style="width: 8px; height: 48px; background: {bar_gradient}; border-radius: 4px; flex-shrink: 0;"></div>
-                <div style="display: flex; flex-direction: column; justify-content: center;">
-                    <h2 style="margin: 0 0 1px 0; padding: 0; font-size: 2rem; line-height: 1.25; color: #0f172a; font-weight: 800; letter-spacing: -0.01em;">
-                        SENTIMENT <span style="color: {accent_color}; font-style: italic;">ANALYSIS</span>
+
+        # Determine accent from NSS later.
+        render_html(
+            """
+            <div style="
+                display:flex;
+                align-items:center;
+                gap:12px;
+                min-height:48px;
+            ">
+
+                <div style="
+                    width:8px;
+                    height:48px;
+                    background:
+                        linear-gradient(
+                            180deg,
+                            #34d399 0%,
+                            #16a34a 100%
+                        );
+                    border-radius:4px;
+                    flex-shrink:0;
+                "></div>
+
+                <div style="
+                    display:flex;
+                    flex-direction:column;
+                    justify-content:center;
+                ">
+
+                    <h2 style="
+                        margin:0 0 1px 0;
+                        padding:0;
+                        font-size:2rem;
+                        line-height:1.25;
+                        color:#0f172a;
+                        font-weight:800;
+                        letter-spacing:-0.01em;
+                    ">
+                        SENTIMENT
+                        <span style="
+                            color:#16a34a;
+                            font-style:italic;
+                        ">
+                            ANALYSIS
+                        </span>
                     </h2>
-                    <span style="margin: 0; padding: 0; font-size: 0.70rem; line-height: 1.1; letter-spacing: 0.08em; color: #64748b; font-weight: 700; text-transform: uppercase;">
-                        COMPREHENSIVE SENTIMENT INTELLIGENCE & SPIKE INVESTIGATION
+
+                    <span style="
+                        margin:0;
+                        padding:0;
+                        font-size:0.70rem;
+                        line-height:1.1;
+                        letter-spacing:0.08em;
+                        color:#64748b;
+                        font-weight:700;
+                        text-transform:uppercase;
+                    ">
+                        SENTIMENT TRENDS
+                        & SPIKE ANALYSIS
                     </span>
+
                 </div>
+
             </div>
-        """, unsafe_allow_html=True)
+            """
+        )
 
-    with c_f_month:
-        month_idx = month_options.index(selected_month) if selected_month in month_options else 0
-        new_month = st.selectbox("Month:", options=month_options, index=month_idx, label_visibility="collapsed", key="sa_month")
-        if new_month != selected_month:
-            st.rerun()
+    # ---------------------------------------------------------
+    # PERIOD PRESET
+    # ---------------------------------------------------------
+    with c_period:
 
-    with c_f_tier:
-        tier_idx = tier_opts.index(selected_tier) if selected_tier in tier_opts else 0
-        new_tier = st.selectbox("Tier:", options=tier_opts, index=tier_idx, label_visibility="collapsed", key="sa_tier")
-        if new_tier != selected_tier:
-            st.rerun()
+        st.selectbox(
+            "Period:",
+            options=period_options,
+            key="sa_period",
+            label_visibility="collapsed",
+            on_change=update_period_from_preset
+        )
 
-    st.markdown("<div style='margin-bottom: 22px;'></div>", unsafe_allow_html=True)
+    # ---------------------------------------------------------
+    # TIER
+    # ---------------------------------------------------------
+    with c_tier:
 
-    # -------------------------------------------------------------
-    # 4. TOP BANNER: NSS SCORE + FORMULA + MONTHLY NSS
-    # -------------------------------------------------------------
-    c_score, c_formula, c_mini = st.columns([1.15, 2.35, 1.1], gap="medium")
+        tier_idx = (
+            tier_opts.index(
+                selected_tier
+            )
+            if selected_tier
+            in tier_opts
+            else 0
+        )
 
+        st.selectbox(
+            "Tier:",
+            options=tier_opts,
+            index=tier_idx,
+            key="sa_tier",
+            label_visibility="collapsed"
+        )
+
+    # =========================================================
+    # 10. CALENDAR FILTER
+    # =========================================================
+    if (
+        dataset_min_date is not None
+        and dataset_max_date is not None
+    ):
+
+        selected_range = st.date_input(
+            "Select Period",
+            value=st.session_state[
+                "sa_date_range"
+            ],
+            min_value=dataset_min_date,
+            max_value=dataset_max_date,
+            key="sa_date_range"
+        )
+
+        if isinstance(
+            selected_range,
+            tuple
+        ):
+
+            if len(selected_range) == 2:
+
+                period_start = pd.Timestamp(
+                    selected_range[0]
+                )
+
+                period_end = (
+                    pd.Timestamp(
+                        selected_range[1]
+                    )
+                    + pd.Timedelta(
+                        days=1
+                    )
+                    - pd.Timedelta(
+                        microseconds=1
+                    )
+                )
+
+            else:
+
+                period_start = pd.Timestamp(
+                    selected_range[0]
+                )
+
+                period_end = (
+                    period_start
+                    + pd.Timedelta(
+                        days=1
+                    )
+                    - pd.Timedelta(
+                        microseconds=1
+                    )
+                )
+
+        else:
+
+            period_start = pd.Timestamp(
+                selected_range
+            )
+
+            period_end = (
+                period_start
+                + pd.Timedelta(
+                    days=1
+                )
+                - pd.Timedelta(
+                    microseconds=1
+                )
+            )
+
+    else:
+
+        period_start = None
+        period_end = None
+
+    # =========================================================
+    # 11. APPLY PERIOD FILTER
+    # =========================================================
+    df_filtered = df_clean.copy()
+
+    if (
+        period_start is not None
+        and period_end is not None
+        and "NEWS_DATE"
+        in df_filtered.columns
+    ):
+
+        df_filtered = df_filtered[
+            (
+                df_filtered[
+                    "NEWS_DATE"
+                ]
+                >= period_start
+            )
+            &
+            (
+                df_filtered[
+                    "NEWS_DATE"
+                ]
+                <= period_end
+            )
+        ].copy()
+
+    # =========================================================
+    # 12. APPLY TIER FILTER
+    # =========================================================
+    if (
+        selected_tier
+        != "All Media Tier"
+        and tier_col
+    ):
+
+        df_filtered = df_filtered[
+            df_filtered[
+                tier_col
+            ]
+            .astype(str)
+            == selected_tier
+        ].copy()
+
+    # =========================================================
+    # 13. NSS
+    # =========================================================
+    total_news = len(
+        df_filtered
+    )
+
+    if sent_col:
+
+        sentiment_series = (
+            df_filtered[
+                sent_col
+            ]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+
+        pos_count = int(
+            (
+                sentiment_series
+                == "positive"
+            ).sum()
+        )
+
+        neg_count = int(
+            (
+                sentiment_series
+                == "negative"
+            ).sum()
+        )
+
+    else:
+
+        pos_count = 0
+        neg_count = 0
+
+    if total_news > 0:
+
+        nss_score = int(
+            round(
+                (
+                    (
+                        pos_count
+                        - neg_count
+                    )
+                    / total_news
+                )
+                * 100
+            )
+        )
+
+    else:
+
+        nss_score = 0
+
+    # =========================================================
+    # 14. NSS COLORS
+    # =========================================================
+    if nss_score < 0:
+
+        bar_gradient = (
+            "linear-gradient("
+            "180deg, #f87171 0%, "
+            "#dc2626 100%)"
+        )
+
+        accent_color = "#dc2626"
+
+        nss_card_bg = "#fef2f2"
+        nss_card_border = "#fca5a5"
+        nss_title_color = "#991b1b"
+        nss_text_color = "#dc2626"
+        nss_badge_bg = "#fee2e2"
+
+        nss_str = (
+            f"{nss_score}%"
+        )
+
+    else:
+
+        bar_gradient = (
+            "linear-gradient("
+            "180deg, #34d399 0%, "
+            "#16a34a 100%)"
+        )
+
+        accent_color = "#16a34a"
+
+        nss_card_bg = "#f0fdf4"
+        nss_card_border = "#86efac"
+        nss_title_color = "#166534"
+        nss_text_color = "#15803d"
+        nss_badge_bg = "#dcfce7"
+
+        nss_str = (
+            f"+{nss_score}%"
+        )
+
+    # =========================================================
+    # 15. NSS BANNER
+    # =========================================================
+    c_score, c_formula, c_mini = st.columns(
+        [1.15, 2.35, 1.1],
+        gap="medium"
+    )
+
+    # ---------------------------------------------------------
+    # SCORE
+    # ---------------------------------------------------------
     with c_score:
-        st.markdown(f"""
-            <div style="background: {nss_card_bg}; border: 1.5px solid {nss_card_border}; border-radius: 12px; padding: 12px 16px; height: 100px; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box;">
-                <span style="font-size: 0.68rem; font-weight: 800; color: {nss_title_color}; letter-spacing: 0.04em;">NET SENTIMENT SCORE</span>
-                <div style="font-size: 2.2rem; font-weight: 800; color: {nss_text_color}; line-height: 1;">
+
+        render_html(
+            f"""
+            <div style="
+                background:{nss_card_bg};
+                border:1.5px solid
+                    {nss_card_border};
+                border-radius:12px;
+                padding:12px 16px;
+                height:100px;
+                display:flex;
+                flex-direction:column;
+                justify-content:space-between;
+                box-sizing:border-box;
+            ">
+
+                <span style="
+                    font-size:0.68rem;
+                    font-weight:800;
+                    color:{nss_title_color};
+                    letter-spacing:0.04em;
+                ">
+                    NET SENTIMENT SCORE
+                </span>
+
+                <div style="
+                    font-size:2.2rem;
+                    font-weight:800;
+                    color:{nss_text_color};
+                    line-height:1;
+                ">
                     {nss_str}
                 </div>
-                <div style="font-size: 0.68rem; font-weight: 700; color: {nss_title_color};">
-                    Period: {selected_month if selected_month != "All Months" else "All Time"}
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
 
+                <div style="
+                    font-size:0.68rem;
+                    color:#64748b;
+                ">
+                    {selected_period}
+                </div>
+
+            </div>
+            """
+        )
+
+    # ---------------------------------------------------------
+    # FORMULA
+    # ---------------------------------------------------------
     with c_formula:
-        st.markdown(f"""
-            <div style="display: flex; align-items: center; justify-content: center; height: 100px; gap: 8px;">
-                <div class="formula-pill-noborder" style="background: #ecfdf5;">
-                    <span style="font-size: 0.68rem; font-weight: 700; color: #059669;">Positive</span>
-                    <span style="font-size: 1.15rem; font-weight: 800; color: #0f172a;">{pos_count:,}</span>
+
+        render_html(
+            f"""
+            <div style="
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                height:100px;
+                gap:8px;
+            ">
+
+                <div
+                    class="formula-pill-noborder"
+                    style="
+                        background:#ecfdf5;
+                    "
+                >
+
+                    <span style="
+                        font-size:0.68rem;
+                        font-weight:700;
+                        color:#059669;
+                    ">
+                        Positive
+                    </span>
+
+                    <span style="
+                        font-size:1.15rem;
+                        font-weight:800;
+                        color:#0f172a;
+                    ">
+                        {pos_count:,}
+                    </span>
+
                 </div>
-                <span style="font-size: 1.3rem; font-weight: 800; color: #94a3b8;">−</span>
-                <div class="formula-pill-noborder" style="background: #fef2f2;">
-                    <span style="font-size: 0.68rem; font-weight: 700; color: #dc2626;">Negative</span>
-                    <span style="font-size: 1.15rem; font-weight: 800; color: #0f172a;">{neg_count:,}</span>
+
+                <span style="
+                    font-size:1.3rem;
+                    font-weight:800;
+                    color:#94a3b8;
+                ">
+                    −
+                </span>
+
+                <div
+                    class="formula-pill-noborder"
+                    style="
+                        background:#fef2f2;
+                    "
+                >
+
+                    <span style="
+                        font-size:0.68rem;
+                        font-weight:700;
+                        color:#dc2626;
+                    ">
+                        Negative
+                    </span>
+
+                    <span style="
+                        font-size:1.15rem;
+                        font-weight:800;
+                        color:#0f172a;
+                    ">
+                        {neg_count:,}
+                    </span>
+
                 </div>
-                <span style="font-size: 1.3rem; font-weight: 800; color: #94a3b8;">÷</span>
-                <div class="formula-pill-noborder" style="background: #eff6ff;">
-                    <span style="font-size: 0.68rem; font-weight: 700; color: #2563eb;">Total</span>
-                    <span style="font-size: 1.15rem; font-weight: 800; color: #0f172a;">{total_news:,}</span>
+
+                <span style="
+                    font-size:1.3rem;
+                    font-weight:800;
+                    color:#94a3b8;
+                ">
+                    ÷
+                </span>
+
+                <div
+                    class="formula-pill-noborder"
+                    style="
+                        background:#eff6ff;
+                    "
+                >
+
+                    <span style="
+                        font-size:0.68rem;
+                        font-weight:700;
+                        color:#2563eb;
+                    ">
+                        Total
+                    </span>
+
+                    <span style="
+                        font-size:1.15rem;
+                        font-weight:800;
+                        color:#0f172a;
+                    ">
+                        {total_news:,}
+                    </span>
+
                 </div>
-                <span style="font-size: 1rem; font-weight: 800; color: #94a3b8;">×100</span>
-                <div style="background: {nss_badge_bg}; color: {nss_text_color}; border-radius: 8px; padding: 10px 14px; font-size: 1.2rem; font-weight: 800; white-space: nowrap;">
+
+                <span style="
+                    font-size:1rem;
+                    font-weight:800;
+                    color:#94a3b8;
+                ">
+                    ×100
+                </span>
+
+                <div style="
+                    background:{nss_badge_bg};
+                    color:{nss_text_color};
+                    border-radius:8px;
+                    padding:10px 14px;
+                    font-size:1.2rem;
+                    font-weight:800;
+                    white-space:nowrap;
+                ">
                     = {nss_str}
                 </div>
-            </div>
-        """, unsafe_allow_html=True)
 
+            </div>
+            """
+        )
+
+    # ---------------------------------------------------------
+    # MONTHLY NSS
+    #
+    # IMPORTANT:
+    # Use YEAR + MONTH instead of only MONTH NUMBER.
+    # This fixes the 1-Year bug where (for example) Sep 2025
+    # and Sep 2026 were incorrectly combined.
+    # ---------------------------------------------------------
     with c_mini:
-        st.markdown("""
-            <div style="text-align: right; margin-bottom: 2px;">
-                <span style="font-size: 0.68rem; font-weight: 800; color: #475569; text-transform: uppercase; letter-spacing: 0.04em;">
+
+        render_html(
+            """
+            <div style="
+                text-align:right;
+                margin-bottom:2px;
+            ">
+                <span style="
+                    font-size:0.68rem;
+                    font-weight:800;
+                    color:#475569;
+                    text-transform:uppercase;
+                    letter-spacing:0.04em;
+                ">
                     Monthly NSS
                 </span>
             </div>
-        """, unsafe_allow_html=True)
-        
-        months_abbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        monthly_nss_vals = [0] * 12
-        monthly_bar_colors = ["#cbd5e1"] * 12
+            """
+        )
 
-        if "NEWS_DATE" in df_clean.columns and sent_col and not df_clean["NEWS_DATE"].dropna().empty:
-            df_m_calc = df_clean.dropna(subset=["NEWS_DATE"]).copy()
-            target_year = int(selected_month.split()[-1]) if selected_month != "All Months" else df_m_calc["NEWS_DATE"].dt.year.max()
+        month_labels = []
+        month_scores = []
+        month_colors = []
 
-            df_year = df_m_calc[df_m_calc["NEWS_DATE"].dt.year == target_year]
-            if selected_tier != "All Media Tier" and tier_col:
-                df_year = df_year[df_year[tier_col].astype(str) == selected_tier]
+        if (
+            "NEWS_DATE" in df_clean.columns
+            and sent_col
+            and not valid_dates.empty
+            and period_start is not None
+            and period_end is not None
+        ):
 
-            df_year["MONTH_NUM"] = df_year["NEWS_DATE"].dt.month
-            for m_idx in range(1, 13):
-                sub_df = df_year[df_year["MONTH_NUM"] == m_idx]
-                tot_m = len(sub_df)
-                if tot_m > 0:
-                    pos_m = len(sub_df[sub_df[sent_col].astype(str).str.lower().str.contains("pos")])
-                    neg_m = len(sub_df[sub_df[sent_col].astype(str).str.lower().str.contains("neg")])
-                    score_m = int(round(((pos_m - neg_m) / tot_m) * 100))
-                    monthly_nss_vals[m_idx - 1] = score_m
-                    monthly_bar_colors[m_idx - 1] = "#dc2626" if score_m < 0 else "#16a34a"
-                else:
-                    monthly_nss_vals[m_idx - 1] = 0
-                    monthly_bar_colors[m_idx - 1] = "#cbd5e1"
+            # -------------------------------------------------
+            # Build actual calendar months inside the selected
+            # period. This preserves the year information.
+            # -------------------------------------------------
+            first_month = (
+                period_start
+                .to_period("M")
+            )
 
-        fig_mini = go.Figure(go.Bar(
-            x=months_abbr,
-            y=monthly_nss_vals,
-            marker_color=monthly_bar_colors,
-            marker_line_width=0,
-            hovertemplate="<b>%{x}</b><br>NSS: %{y}%<extra></extra>"
-        ))
-        fig_mini.update_layout(
-            margin=dict(l=0, r=0, t=14, b=0),
-            height=65,
-            xaxis=dict(visible=True, tickfont=dict(size=7.5, color="#94a3b8"), showgrid=False),
-            yaxis=dict(visible=False, zeroline=True, zerolinecolor="rgba(148, 163, 184, 0.4)", zerolinewidth=1),
+            last_month = (
+                period_end
+                .to_period("M")
+            )
+
+            month_periods = pd.period_range(
+                start=first_month,
+                end=last_month,
+                freq="M"
+            )
+
+            df_month = (
+                df_clean
+                .dropna(
+                    subset=["NEWS_DATE"]
+                )
+                .copy()
+            )
+
+            # -------------------------------------------------
+            # Apply media tier only.
+            # -------------------------------------------------
+            if (
+                selected_tier != "All Media Tier"
+                and tier_col
+            ):
+
+                df_month = df_month[
+                    df_month[
+                        tier_col
+                    ]
+                    .astype(str)
+                    == selected_tier
+                ].copy()
+
+            # -------------------------------------------------
+            # Apply the same selected calendar period.
+            # -------------------------------------------------
+            df_month = df_month[
+                (
+                    df_month[
+                        "NEWS_DATE"
+                    ]
+                    >= period_start
+                )
+                &
+                (
+                    df_month[
+                        "NEWS_DATE"
+                    ]
+                    <= period_end
+                )
+            ].copy()
+
+            if not df_month.empty:
+
+                df_month[
+                    "MONTH_PERIOD"
+                ] = (
+                    df_month[
+                        "NEWS_DATE"
+                    ].dt.to_period("M")
+                )
+
+            # -------------------------------------------------
+            # Calculate NSS separately for every real month.
+            # -------------------------------------------------
+            for month_period in month_periods:
+
+                label = (
+                    month_period
+                    .strftime("%b %Y")
+                )
+
+                month_labels.append(
+                    label
+                )
+
+                if df_month.empty:
+
+                    month_scores.append(
+                        0
+                    )
+
+                    month_colors.append(
+                        "#cbd5e1"
+                    )
+
+                    continue
+
+                df_m = df_month[
+                    df_month[
+                        "MONTH_PERIOD"
+                    ]
+                    == month_period
+                ]
+
+                if df_m.empty:
+
+                    month_scores.append(
+                        0
+                    )
+
+                    month_colors.append(
+                        "#cbd5e1"
+                    )
+
+                    continue
+
+                total_m = len(
+                    df_m
+                )
+
+                month_sent = (
+                    df_m[
+                        sent_col
+                    ]
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                )
+
+                pos_m = int(
+                    (
+                        month_sent
+                        == "positive"
+                    ).sum()
+                )
+
+                neg_m = int(
+                    (
+                        month_sent
+                        == "negative"
+                    ).sum()
+                )
+
+                score_m = int(
+                    round(
+                        (
+                            (
+                                pos_m
+                                - neg_m
+                            )
+                            / total_m
+                        )
+                        * 100
+                    )
+                )
+
+                month_scores.append(
+                    score_m
+                )
+
+                month_colors.append(
+                    (
+                        "#dc2626"
+                        if score_m < 0
+                        else "#16a34a"
+                    )
+                )
+
+        # -----------------------------------------------------
+        # Fallback if there is no usable date range.
+        # -----------------------------------------------------
+        if not month_labels:
+
+            month_labels = ["N/A"]
+            month_scores = [0]
+            month_colors = ["#cbd5e1"]
+
+        fig_month = go.Figure(
+            go.Bar(
+                x=month_labels,
+                y=month_scores,
+                marker_color=month_colors,
+                marker_line_width=0,
+                hovertemplate=(
+                    "<b>%{x}</b>"
+                    "<br>NSS: %{y}%"
+                    "<extra></extra>"
+                )
+            )
+        )
+
+        # -----------------------------------------------------
+        # Keep the compact chart but make labels readable when
+        # the selected period is 1 year.
+        # -----------------------------------------------------
+        if len(month_labels) <= 4:
+
+            tick_font_size = 7.5
+
+        elif len(month_labels) <= 8:
+
+            tick_font_size = 6.8
+
+        else:
+
+            tick_font_size = 6
+
+        fig_month.update_layout(
+            height=70,
+            margin=dict(
+                l=0,
+                r=0,
+                t=14,
+                b=0
+            ),
+            xaxis=dict(
+                visible=True,
+                tickfont=dict(
+                    size=tick_font_size,
+                    color="#94a3b8"
+                ),
+                showgrid=False,
+                tickangle=0
+            ),
+            yaxis=dict(
+                visible=False,
+                zeroline=True,
+                zerolinecolor=(
+                    "rgba(148, 163, 184, 0.4)"
+                )
+            ),
             paper_bgcolor="#f8fafc",
             plot_bgcolor="#f8fafc"
         )
+
         st.plotly_chart(
-            fig_mini, 
-            use_container_width=True, 
-            config={"displayModeBar": False}
+            fig_month,
+            use_container_width=True,
+            config={
+                "displayModeBar": False
+            }
         )
 
-    st.markdown("<div style='margin-bottom: 24px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='margin-bottom:24px;'></div>",
+        unsafe_allow_html=True
+    )
 
-    # -------------------------------------------------------------
-    # 5. SPIKE DYNAMICS & PEAK DATE DETECTION
-    # -------------------------------------------------------------
-    st.markdown('<div class="ov-card-title">SPIKE DYNAMICS: POSITIVE VS NEGATIVE ANOMALY INVESTIGATION</div>', unsafe_allow_html=True)
+    # =========================================================
+    # 16. SENTIMENT SPIKES
+    # =========================================================
+    render_html(
+        """
+        <div class="sa-card-title">
+            SENTIMENT SPIKES
+        </div>
+        """
+    )
 
-    df_daily = df_filtered.groupby([df_filtered["NEWS_DATE"].dt.date, sent_col]).size().unstack(fill_value=0) if ("NEWS_DATE" in df_filtered.columns and sent_col) else pd.DataFrame()
-    
-    pos_peak_date, pos_peak_count, pos_topic = "-", 0, "-"
-    neg_peak_date, neg_peak_count, neg_topic = "-", 0, "-"
+    # =========================================================
+    # 17. DAILY SENTIMENT DATA
+    # =========================================================
+    if (
+        "NEWS_DATE"
+        in df_filtered.columns
+        and sent_col
+        and not df_filtered.empty
+    ):
+
+        df_daily_base = (
+            df_filtered
+            .dropna(
+                subset=[
+                    "NEWS_DATE"
+                ]
+            )
+            .copy()
+        )
+
+        df_daily_base[
+            "DATE_ONLY"
+        ] = (
+            df_daily_base[
+                "NEWS_DATE"
+            ].dt.date
+        )
+
+        df_daily = (
+            df_daily_base
+            .groupby(
+                [
+                    "DATE_ONLY",
+                    sent_col
+                ]
+            )
+            .size()
+            .unstack(
+                fill_value=0
+            )
+        )
+
+    else:
+
+        df_daily = pd.DataFrame()
+
+    # =========================================================
+    # 18. DEFAULT SPIKE VALUES
+    # =========================================================
+    pos_peak_date = "-"
+    pos_peak_date_raw = None
+    pos_peak_count = 0
+    pos_peak_is_spike = False
+    pos_topic = "-"
+
+    neg_peak_date = "-"
+    neg_peak_date_raw = None
+    neg_peak_count = 0
+    neg_peak_is_spike = False
+    neg_topic = "-"
+
     pos_spikes = []
     neg_spikes = []
 
+    # =========================================================
+    # 19. SPIKE DETECTION
+    # =========================================================
     if not df_daily.empty:
-        df_reset = df_daily.reset_index().rename(columns={"NEWS_DATE": "date_val"})
+
+        df_reset = (
+            df_daily
+            .reset_index()
+            .rename(
+                columns={
+                    "DATE_ONLY":
+                    "date_val"
+                }
+            )
+        )
+
+        # -----------------------------------------------------
+        # Adaptive threshold
+        #
+        # 200 is retained as an absolute upper floor.
+        # -----------------------------------------------------
         MIN_ABSOLUTE_SPIKE = 200
 
-        if "Positive" in df_reset.columns:
-            pos_series = df_reset["Positive"]
-            pos_max = pos_series.max()
-            pos_mean = pos_series.mean()
-            pos_std = pos_series.std() if len(pos_series) > 1 else 0
+        # =====================================================
+        # POSITIVE
+        # =====================================================
+        if (
+            "Positive"
+            in df_reset.columns
+        ):
 
-            pos_peak_idx = pos_series.idxmax()
-            pos_peak_date_raw = df_reset.loc[pos_peak_idx, "date_val"]
-            pos_peak_count = int(pos_max)
-            pos_peak_date = pos_peak_date_raw.strftime("%d %B %Y")
-            df_pos_peak = df_filtered[(df_filtered["NEWS_DATE"].dt.date == pos_peak_date_raw) & (df_filtered[sent_col] == "Positive")]
-            pos_topic = df_pos_peak[topic_col].mode()[0] if topic_col and not df_pos_peak.empty else "General"
+            pos_series = (
+                df_reset[
+                    "Positive"
+                ]
+                .astype(float)
+            )
 
-            thresh_pos = max(pos_mean + 3 * pos_std, pos_max * 0.65, MIN_ABSOLUTE_SPIKE)
-            for i in range(len(df_reset)):
-                val = pos_series.iloc[i]
-                if val >= thresh_pos:
-                    prev_v = pos_series.iloc[i - 1] if i > 0 else 0
-                    next_v = pos_series.iloc[i + 1] if i < len(df_reset) - 1 else 0
-                    if val >= prev_v and val >= next_v:
-                        pos_spikes.append((df_reset.loc[i, "date_val"], val))
+            pos_max = float(
+                pos_series.max()
+            )
 
-        if "Negative" in df_reset.columns:
-            neg_series = df_reset["Negative"]
-            neg_max = neg_series.max()
-            neg_mean = neg_series.mean()
-            neg_std = neg_series.std() if len(neg_series) > 1 else 0
+            pos_mean = float(
+                pos_series.mean()
+            )
 
-            neg_peak_idx = neg_series.idxmax()
-            neg_peak_date_raw = df_reset.loc[neg_peak_idx, "date_val"]
-            neg_peak_count = int(neg_max)
-            neg_peak_date = neg_peak_date_raw.strftime("%d %B %Y")
-            df_neg_peak = df_filtered[(df_filtered["NEWS_DATE"].dt.date == neg_peak_date_raw) & (df_filtered[sent_col] == "Negative")]
-            neg_topic = df_neg_peak[topic_col].mode()[0] if topic_col and not df_neg_peak.empty else "General"
+            pos_std = float(
+                pos_series.std()
+                if len(pos_series) > 1
+                else 0
+            )
 
-            thresh_neg = max(neg_mean + 3 * neg_std, neg_max * 0.60, MIN_ABSOLUTE_SPIKE)
-            for i in range(len(df_reset)):
-                val = neg_series.iloc[i]
-                if val >= thresh_neg:
-                    prev_v = neg_series.iloc[i - 1] if i > 0 else 0
-                    next_v = neg_series.iloc[i + 1] if i < len(df_reset) - 1 else 0
-                    if val >= prev_v and val >= next_v:
-                        neg_spikes.append((df_reset.loc[i, "date_val"], val))
+            pos_peak_idx = (
+                pos_series.idxmax()
+            )
 
-    sp1, sp2, sp3, sp4 = st.columns(4, gap="medium")
+            pos_peak_date_raw = (
+                df_reset.loc[
+                    pos_peak_idx,
+                    "date_val"
+                ]
+            )
+
+            pos_peak_count = int(
+                pos_max
+            )
+
+            pos_peak_date = (
+                pos_peak_date_raw
+                .strftime(
+                    "%d %B %Y"
+                )
+            )
+
+            # -------------------------------------------------
+            # Topic at highest positive volume
+            # -------------------------------------------------
+            if topic_col:
+
+                df_pos_peak = (
+                    df_filtered[
+                        (
+                            df_filtered[
+                                "NEWS_DATE"
+                            ].dt.date
+                            == pos_peak_date_raw
+                        )
+                        &
+                        (
+                            df_filtered[
+                                sent_col
+                            ]
+                            == "Positive"
+                        )
+                    ]
+                )
+
+                if not df_pos_peak.empty:
+
+                    mode_topic = (
+                        df_pos_peak[
+                            topic_col
+                        ]
+                        .dropna()
+                        .astype(str)
+                        .mode()
+                    )
+
+                    if not mode_topic.empty:
+
+                        pos_topic = (
+                            mode_topic.iloc[0]
+                        )
+
+            # -------------------------------------------------
+            # Positive threshold
+            # -------------------------------------------------
+            pos_threshold = max(
+                pos_mean
+                + 3 * pos_std,
+                pos_max * 0.65,
+                MIN_ABSOLUTE_SPIKE
+            )
+
+            for i in range(
+                len(df_reset)
+            ):
+
+                value = float(
+                    pos_series.iloc[i]
+                )
+
+                if value >= pos_threshold:
+
+                    previous_value = (
+                        float(
+                            pos_series.iloc[
+                                i - 1
+                            ]
+                        )
+                        if i > 0
+                        else 0
+                    )
+
+                    next_value = (
+                        float(
+                            pos_series.iloc[
+                                i + 1
+                            ]
+                        )
+                        if i <
+                        len(df_reset) - 1
+                        else 0
+                    )
+
+                    if (
+                        value >= previous_value
+                        and value >= next_value
+                    ):
+
+                        pos_spikes.append(
+                            (
+                                df_reset.loc[
+                                    i,
+                                    "date_val"
+                                ],
+                                value
+                            )
+                        )
+
+            pos_peak_is_spike = any(
+                date == pos_peak_date_raw
+                for date, _
+                in pos_spikes
+            )
+
+        # =====================================================
+        # NEGATIVE
+        # =====================================================
+        if (
+            "Negative"
+            in df_reset.columns
+        ):
+
+            neg_series = (
+                df_reset[
+                    "Negative"
+                ]
+                .astype(float)
+            )
+
+            neg_max = float(
+                neg_series.max()
+            )
+
+            neg_mean = float(
+                neg_series.mean()
+            )
+
+            neg_std = float(
+                neg_series.std()
+                if len(neg_series) > 1
+                else 0
+            )
+
+            neg_peak_idx = (
+                neg_series.idxmax()
+            )
+
+            neg_peak_date_raw = (
+                df_reset.loc[
+                    neg_peak_idx,
+                    "date_val"
+                ]
+            )
+
+            neg_peak_count = int(
+                neg_max
+            )
+
+            neg_peak_date = (
+                neg_peak_date_raw
+                .strftime(
+                    "%d %B %Y"
+                )
+            )
+
+            # -------------------------------------------------
+            # Topic at highest negative volume
+            # -------------------------------------------------
+            if topic_col:
+
+                df_neg_peak = (
+                    df_filtered[
+                        (
+                            df_filtered[
+                                "NEWS_DATE"
+                            ].dt.date
+                            == neg_peak_date_raw
+                        )
+                        &
+                        (
+                            df_filtered[
+                                sent_col
+                            ]
+                            == "Negative"
+                        )
+                    ]
+                )
+
+                if not df_neg_peak.empty:
+
+                    mode_topic = (
+                        df_neg_peak[
+                            topic_col
+                        ]
+                        .dropna()
+                        .astype(str)
+                        .mode()
+                    )
+
+                    if not mode_topic.empty:
+
+                        neg_topic = (
+                            mode_topic.iloc[0]
+                        )
+
+            # -------------------------------------------------
+            # Negative threshold
+            # -------------------------------------------------
+            neg_threshold = max(
+                neg_mean
+                + 3 * neg_std,
+                neg_max * 0.60,
+                MIN_ABSOLUTE_SPIKE
+            )
+
+            for i in range(
+                len(df_reset)
+            ):
+
+                value = float(
+                    neg_series.iloc[i]
+                )
+
+                if value >= neg_threshold:
+
+                    previous_value = (
+                        float(
+                            neg_series.iloc[
+                                i - 1
+                            ]
+                        )
+                        if i > 0
+                        else 0
+                    )
+
+                    next_value = (
+                        float(
+                            neg_series.iloc[
+                                i + 1
+                            ]
+                        )
+                        if i <
+                        len(df_reset) - 1
+                        else 0
+                    )
+
+                    if (
+                        value >= previous_value
+                        and value >= next_value
+                    ):
+
+                        neg_spikes.append(
+                            (
+                                df_reset.loc[
+                                    i,
+                                    "date_val"
+                                ],
+                                value
+                            )
+                        )
+
+            neg_peak_is_spike = any(
+                date == neg_peak_date_raw
+                for date, _
+                in neg_spikes
+            )
+
+    # =========================================================
+    # 20. SPIKE SUMMARY CARDS
+    # =========================================================
+    sp1, sp2, sp3 = st.columns(
+        3,
+        gap="medium"
+    )
+
+    # ---------------------------------------------------------
+    # POSITIVE CARD
+    # ---------------------------------------------------------
     with sp1:
-        st.markdown(f"""
-            <div class="spike-metric-card" style="border-left: 4px solid #16a34a !important;">
-                <div style="font-size: 0.68rem; font-weight: 800; color: #16a34a;">HIGHEST POSITIVE SPIKE</div>
-                <div style="font-size: 1.4rem; font-weight: 800; color: #0f172a; margin: 4px 0;">{pos_peak_count} Articles</div>
-                <div style="font-size: 0.72rem; color: #64748b;">{pos_peak_date} • <b>{pos_topic}</b></div>
+
+        positive_card_title = (
+            "HIGHEST POSITIVE SPIKE"
+            if pos_peak_is_spike
+            else "HIGHEST POSITIVE VOLUME"
+        )
+
+        render_html(
+            f"""
+            <div
+                class="spike-metric-card"
+                style="
+                    border-left:
+                    4px solid #16a34a;
+                "
+            >
+
+                <div style="
+                    font-size:0.68rem;
+                    font-weight:800;
+                    color:#16a34a;
+                ">
+                    {positive_card_title}
+                </div>
+
+                <div style="
+                    font-size:1.4rem;
+                    font-weight:800;
+                    color:#0f172a;
+                    margin:4px 0;
+                ">
+                    {pos_peak_count:,}
+                    Articles
+                </div>
+
+                <div style="
+                    font-size:0.72rem;
+                    color:#64748b;
+                ">
+                    {pos_peak_date}
+                    • <b>{html.escape(str(pos_topic))}</b>
+                </div>
+
             </div>
-        """, unsafe_allow_html=True)
+            """
+        )
+
+    # ---------------------------------------------------------
+    # NEGATIVE CARD
+    # ---------------------------------------------------------
     with sp2:
-        st.markdown(f"""
-            <div class="spike-metric-card" style="border-left: 4px solid #16a34a !important;">
-                <div style="font-size: 0.68rem; font-weight: 800; color: #16a34a;">POSITIVE MOMENTUM</div>
-                <div style="font-size: 1.4rem; font-weight: 800; color: #16a34a; margin: 4px 0;">{pos_count:,} Total</div>
-                <div style="font-size: 0.72rem; color: #64748b;">{(pos_count/max(1, total_news)*100):.1f}% Positive Exposure</div>
+
+        negative_card_title = (
+            "HIGHEST NEGATIVE SPIKE"
+            if neg_peak_is_spike
+            else "HIGHEST NEGATIVE VOLUME"
+        )
+
+        render_html(
+            f"""
+            <div
+                class="spike-metric-card"
+                style="
+                    border-left:
+                    4px solid #dc2626;
+                "
+            >
+
+                <div style="
+                    font-size:0.68rem;
+                    font-weight:800;
+                    color:#dc2626;
+                ">
+                    {negative_card_title}
+                </div>
+
+                <div style="
+                    font-size:1.4rem;
+                    font-weight:800;
+                    color:#0f172a;
+                    margin:4px 0;
+                ">
+                    {neg_peak_count:,}
+                    Articles
+                </div>
+
+                <div style="
+                    font-size:0.72rem;
+                    color:#64748b;
+                ">
+                    {neg_peak_date}
+                    • <b>{html.escape(str(neg_topic))}</b>
+                </div>
+
             </div>
-        """, unsafe_allow_html=True)
+            """
+        )
+
+    # ---------------------------------------------------------
+    # MITIGATION CARD
+    # ---------------------------------------------------------
     with sp3:
-        st.markdown(f"""
-            <div class="spike-metric-card" style="border-left: 4px solid #dc2626 !important;">
-                <div style="font-size: 0.68rem; font-weight: 800; color: #dc2626;">HIGHEST NEGATIVE SPIKE</div>
-                <div style="font-size: 1.4rem; font-weight: 800; color: #0f172a; margin: 4px 0;">{neg_peak_count} Articles</div>
-                <div style="font-size: 0.72rem; color: #64748b;">{neg_peak_date} • <b>{neg_topic}</b></div>
+
+        mitigation_title = (
+            "CRISIS MITIGATION NEEDED"
+            if neg_peak_is_spike
+            else "MITIGATION NEEDED"
+        )
+
+        negative_percentage = (
+            neg_count
+            / max(
+                1,
+                total_news
+            )
+            * 100
+        )
+
+        render_html(
+            f"""
+            <div
+                class="spike-metric-card"
+                style="
+                    border-left:
+                    4px solid #dc2626;
+                "
+            >
+
+                <div style="
+                    font-size:0.68rem;
+                    font-weight:800;
+                    color:#dc2626;
+                ">
+                    {mitigation_title}
+                </div>
+
+                <div style="
+                    font-size:1.4rem;
+                    font-weight:800;
+                    color:#dc2626;
+                    margin:4px 0;
+                ">
+                    {neg_count:,}
+                    Total
+                </div>
+
+                <div style="
+                    font-size:0.72rem;
+                    color:#64748b;
+                ">
+                    {negative_percentage:.1f}%
+                    Negative Coverage
+                </div>
+
             </div>
-        """, unsafe_allow_html=True)
-    with sp4:
-        st.markdown(f"""
-            <div class="spike-metric-card" style="border-left: 4px solid #dc2626 !important;">
-                <div style="font-size: 0.68rem; font-weight: 800; color: #dc2626;">CRISIS MITIGATION NEEDED</div>
-                <div style="font-size: 1.4rem; font-weight: 800; color: #dc2626; margin: 4px 0;">{neg_count:,} Total</div>
-                <div style="font-size: 0.72rem; color: #64748b;">{(neg_count/max(1, total_news)*100):.1f}% Issues Requiring Response</div>
-            </div>
-        """, unsafe_allow_html=True)
-    st.markdown("<div style='margin-bottom: 24px;'></div>", unsafe_allow_html=True)
+            """
+        )
+
+    st.markdown(
+        "<div style='margin-bottom:24px;'></div>",
+        unsafe_allow_html=True
+    )
+
+    # =========================================================
+    # 21. DAILY SENTIMENT SPIKE CHART
+    # =========================================================
     if not df_daily.empty:
+
         fig_spike = go.Figure()
-        df_reset = df_daily.reset_index().rename(columns={"NEWS_DATE": "date_val"})
-        for s_name, s_col in [("Positive", "#16a34a"), ("Neutral", "#94a3b8"), ("Negative", "#dc2626")]:
-            if s_name in df_reset.columns:
-                fig_spike.add_trace(go.Scatter(
-                    x=df_reset["date_val"], y=df_reset[s_name], mode='lines', name=s_name,
-                    line=dict(color=s_col, width=2.2, shape='spline')
-                ))
 
+        df_reset = (
+            df_daily
+            .reset_index()
+            .rename(
+                columns={
+                    "DATE_ONLY":
+                    "date_val"
+                }
+            )
+        )
+
+        # -----------------------------------------------------
+        # Positive
+        # -----------------------------------------------------
+        if "Positive" in df_reset.columns:
+
+            fig_spike.add_trace(
+                go.Scatter(
+                    x=df_reset[
+                        "date_val"
+                    ],
+                    y=df_reset[
+                        "Positive"
+                    ],
+                    mode="lines",
+                    name="Positive",
+                    line=dict(
+                        color="#16a34a",
+                        width=2.2,
+                        shape="spline"
+                    )
+                )
+            )
+
+        # -----------------------------------------------------
+        # Neutral
+        # -----------------------------------------------------
+        if "Neutral" in df_reset.columns:
+
+            fig_spike.add_trace(
+                go.Scatter(
+                    x=df_reset[
+                        "date_val"
+                    ],
+                    y=df_reset[
+                        "Neutral"
+                    ],
+                    mode="lines",
+                    name="Neutral",
+                    line=dict(
+                        color="#94a3b8",
+                        width=2.0,
+                        shape="spline"
+                    )
+                )
+            )
+
+        # -----------------------------------------------------
+        # Negative
+        # -----------------------------------------------------
+        if "Negative" in df_reset.columns:
+
+            fig_spike.add_trace(
+                go.Scatter(
+                    x=df_reset[
+                        "date_val"
+                    ],
+                    y=df_reset[
+                        "Negative"
+                    ],
+                    mode="lines",
+                    name="Negative",
+                    line=dict(
+                        color="#dc2626",
+                        width=2.2,
+                        shape="spline"
+                    )
+                )
+            )
+
+        # -----------------------------------------------------
+        # Positive spike markers
+        # -----------------------------------------------------
         if pos_spikes:
-            fig_spike.add_trace(go.Scatter(
-                x=[d[0] for d in pos_spikes], y=[d[1] for d in pos_spikes],
-                mode='markers', name='Pos Spike',
-                marker=dict(size=9, color='#16a34a', symbol='circle', line=dict(color='#ffffff', width=2)),
-                hovertemplate="<b>Positive Spike</b><br>Date: %{x}<br>Volume: %{y}<extra></extra>"
-            ))
 
+            fig_spike.add_trace(
+                go.Scatter(
+                    x=[
+                        item[0]
+                        for item
+                        in pos_spikes
+                    ],
+                    y=[
+                        item[1]
+                        for item
+                        in pos_spikes
+                    ],
+                    mode="markers",
+                    name="Positive Spike",
+                    marker=dict(
+                        size=9,
+                        color="#16a34a",
+                        line=dict(
+                            color="#ffffff",
+                            width=2
+                        )
+                    ),
+                    hovertemplate=(
+                        "<b>Positive Spike</b>"
+                        "<br>Date: %{x}"
+                        "<br>Volume: %{y}"
+                        "<extra></extra>"
+                    )
+                )
+            )
+
+        # -----------------------------------------------------
+        # Negative spike markers
+        # -----------------------------------------------------
         if neg_spikes:
-            fig_spike.add_trace(go.Scatter(
-                x=[d[0] for d in neg_spikes], y=[d[1] for d in neg_spikes],
-                mode='markers', name='Neg Spike (Crisis)',
-                marker=dict(size=10, color='#dc2626', symbol='circle', line=dict(color='#ffffff', width=2)),
-                hovertemplate="<b>Negative Crisis Spike</b><br>Date: %{x}<br>Volume: %{y}<extra></extra>"
-            ))
+
+            fig_spike.add_trace(
+                go.Scatter(
+                    x=[
+                        item[0]
+                        for item
+                        in neg_spikes
+                    ],
+                    y=[
+                        item[1]
+                        for item
+                        in neg_spikes
+                    ],
+                    mode="markers",
+                    name="Negative Spike",
+                    marker=dict(
+                        size=10,
+                        color="#dc2626",
+                        line=dict(
+                            color="#ffffff",
+                            width=2
+                        )
+                    ),
+                    hovertemplate=(
+                        "<b>Negative Spike</b>"
+                        "<br>Date: %{x}"
+                        "<br>Volume: %{y}"
+                        "<extra></extra>"
+                    )
+                )
+            )
+
+        # -----------------------------------------------------
+        # Mark spike dates
+        # -----------------------------------------------------
+        spike_dates = sorted(
+            list(
+                set(
+                    [
+                        item[0]
+                        for item
+                        in pos_spikes
+                    ]
+                    +
+                    [
+                        item[0]
+                        for item
+                        in neg_spikes
+                    ]
+                )
+            )
+        )
+
+        for spike_date in spike_dates:
+
+            fig_spike.add_vline(
+                x=pd.Timestamp(
+                    spike_date
+                ),
+                line_width=1,
+                line_dash="dot",
+                line_color="#cbd5e1"
+            )
 
         fig_spike.update_layout(
-            height=240, margin=dict(l=0, r=0, t=26, b=0),
-            paper_bgcolor="#f8fafc", plot_bgcolor="#f8fafc",
-            xaxis=dict(showgrid=False, tickfont=dict(size=9.5, color="#64748b")),
-            yaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.9)", tickfont=dict(size=9, color="#94a3b8")),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=9.5))
+            height=240,
+            margin=dict(
+                l=0,
+                r=0,
+                t=26,
+                b=0
+            ),
+            paper_bgcolor="#f8fafc",
+            plot_bgcolor="#f8fafc",
+            hovermode="x unified",
+            xaxis=dict(
+                showgrid=False,
+                tickfont=dict(
+                    size=9.5,
+                    color="#64748b"
+                )
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor=(
+                    "rgba(226, 232, 240, 0.9)"
+                ),
+                tickfont=dict(
+                    size=9,
+                    color="#94a3b8"
+                ),
+                rangemode="tozero"
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="left",
+                x=0,
+                font=dict(
+                    size=9.5
+                )
+            )
         )
+
         st.plotly_chart(
-            fig_spike, 
-            use_container_width=True, 
+            fig_spike,
+            use_container_width=True,
             config={
                 "displayModeBar": True,
-                "modeBarButtons": [["zoom2d", "pan2d", "resetScale2d"]],
+                "modeBarButtons": [
+                    [
+                        "zoom2d",
+                        "pan2d",
+                        "resetScale2d"
+                    ]
+                ],
                 "displaylogo": False
             }
         )
 
-    st.markdown("<div style='margin-bottom: 24px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='margin-bottom:24px;'></div>",
+        unsafe_allow_html=True
+    )
 
-    # -------------------------------------------------------------
-    # 6. SENTIMENT DISTRIBUTION BY TOPIC & KEYWORD CLOUDS
-    # -------------------------------------------------------------
-    c_dist, c_cloud = st.columns([1, 1], gap="large")
+    # =========================================================
+    # 22. SENTIMENT DISTRIBUTION + TOP KEYWORDS
+    # =========================================================
+    c_dist, c_keywords = st.columns(
+        [1, 1],
+        gap="large"
+    )
+
+    # =========================================================
+    # 23. SENTIMENT DISTRIBUTION BY TOPIC
+    # =========================================================
     with c_dist:
-        st.markdown('<div class="ov-card-title">SENTIMENT DISTRIBUTION BY TOPIC</div>', unsafe_allow_html=True)
-        if topic_col and sent_col and not df_filtered.empty:
-            top_t = df_filtered[topic_col].value_counts().head(5).index.tolist()
-            df_g = df_filtered[df_filtered[topic_col].isin(top_t)].groupby([topic_col, sent_col]).size().unstack(fill_value=0).reset_index()
-            fig_b = go.Figure()
-            for s_name, s_color in [("Positive", "#10b981"), ("Neutral", "#94a3b8"), ("Negative", "#ef4444")]:
-                if s_name in df_g.columns:
-                    fig_b.add_trace(go.Bar(x=df_g[topic_col], y=df_g[s_name], name=s_name.lower(), marker_color=s_color, width=0.22))
-            fig_b.update_layout(
-                barmode='stack', height=210, margin=dict(l=0, r=0, t=20, b=0),
-                paper_bgcolor="#f8fafc", plot_bgcolor="#f8fafc",
-                xaxis=dict(showgrid=False, tickfont=dict(size=9.5)),
-                yaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.9)"),
-                legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, font=dict(size=9.5))
+
+        render_html(
+            """
+            <div class="sa-card-title">
+                SENTIMENT DISTRIBUTION BY TOPIC
+            </div>
+            """
+        )
+
+        if (
+            topic_col
+            and sent_col
+            and not df_filtered.empty
+        ):
+
+            top_topics = (
+                df_filtered[
+                    topic_col
+                ]
+                .value_counts()
+                .head(5)
+                .index
+                .tolist()
             )
+
+            df_topic = (
+                df_filtered[
+                    df_filtered[
+                        topic_col
+                    ].isin(
+                        top_topics
+                    )
+                ]
+                .groupby(
+                    [
+                        topic_col,
+                        sent_col
+                    ]
+                )
+                .size()
+                .unstack(
+                    fill_value=0
+                )
+                .reset_index()
+            )
+
+            fig_topic = go.Figure()
+
+            for (
+                sentiment_name,
+                sentiment_color
+            ) in [
+                ("Positive", "#10b981"),
+                ("Neutral", "#94a3b8"),
+                ("Negative", "#ef4444")
+            ]:
+
+                if (
+                    sentiment_name
+                    in df_topic.columns
+                ):
+
+                    fig_topic.add_trace(
+                        go.Bar(
+                            x=df_topic[
+                                topic_col
+                            ],
+                            y=df_topic[
+                                sentiment_name
+                            ],
+                            name=sentiment_name,
+                            marker_color=(
+                                sentiment_color
+                            )
+                        )
+                    )
+
+            fig_topic.update_layout(
+                barmode="stack",
+                height=210,
+                margin=dict(
+                    l=0,
+                    r=0,
+                    t=20,
+                    b=0
+                ),
+                paper_bgcolor="#f8fafc",
+                plot_bgcolor="#f8fafc",
+                xaxis=dict(
+                    showgrid=False,
+                    tickfont=dict(
+                        size=9.5
+                    )
+                ),
+                yaxis=dict(
+                    showgrid=True,
+                    gridcolor=(
+                        "rgba(226, 232, 240, 0.9)"
+                    )
+                ),
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.2,
+                    xanchor="center",
+                    x=0.5,
+                    font=dict(
+                        size=9.5
+                    )
+                )
+            )
+
             st.plotly_chart(
-                fig_b, 
-                use_container_width=True, 
+                fig_topic,
+                use_container_width=True,
                 config={
-                    "displayModeBar": True,
-                    "modeBarButtons": [["zoom2d", "pan2d", "resetScale2d"]],
-                    "displaylogo": False
+                    "displayModeBar": False
                 }
             )
 
-    with c_cloud:
-        st.markdown('<div class="ov-card-title">POSITIVE & NEGATIVE KEYWORD CLOUDS</div>', unsafe_allow_html=True)
-        k1, k2 = st.columns(2)
-        with k1:
-            st.markdown("<span style='font-size: 0.75rem; font-weight: 800; color: #059669;'>Positive Drivers</span>", unsafe_allow_html=True)
-            st.markdown("""
-                <div style="margin-top: 6px;">
-                    <span class="badge-pos">Project</span> <span class="badge-pos">Success</span>
-                    <span class="badge-pos">Innovation</span> <span class="badge-pos">Growth</span>
-                    <span class="badge-pos">Profit</span> <span class="badge-pos">Achievement</span>
-                </div>
-            """, unsafe_allow_html=True)
-        with k2:
-            st.markdown("<span style='font-size: 0.75rem; font-weight: 800; color: #dc2626;'>Negative Triggers</span>", unsafe_allow_html=True)
-            st.markdown("""
-                <div style="margin-top: 6px;">
-                    <span class="badge-neg">Delay</span> <span class="badge-neg">Cost</span>
-                    <span class="badge-neg">Problem</span> <span class="badge-neg">Issue</span>
-                    <span class="badge-neg">Decline</span> <span class="badge-neg">Risk</span>
-                </div>
-            """, unsafe_allow_html=True)
+        else:
 
-    st.markdown("<div style='margin-bottom: 26px;'></div>", unsafe_allow_html=True)
+            st.info(
+                "Topic sentiment data "
+                "is not available."
+            )
 
-    # -------------------------------------------------------------
-    # 7. PEAK DATE ARTICLES INVESTIGATION
-    # -------------------------------------------------------------
-    st.markdown('<div class="ov-card-title">PEAK DATE ARTICLES INVESTIGATION: TIME DISTRIBUTION & ARTICLE BREAKDOWN</div>', unsafe_allow_html=True)
+    # =========================================================
+    # 24. TOP KEYWORDS
+    # =========================================================
+    with c_keywords:
 
-    # 1. Pilihan Sentimen ditaruh lebih awal untuk menentukan tanggal peak yang relevan
-    f_tbl_col1, f_tbl_col2, _ = st.columns([1.6, 1.4, 2.2], gap="medium")
-
-    with f_tbl_col2:
-        sel_sentiment = st.selectbox(
-            "Filter Sentiment:", 
-            options=["All Sentiments", "Positive", "Negative"], 
-            index=0, 
-            key="tbl_sel_sent"
+        render_html(
+            """
+            <div class="sa-card-title">
+                TOP KEYWORDS
+            </div>
+            """
         )
 
-    # 2. Saring tanggal peak berdasarkan sentimen yang dipilih
-    pos_dates_only = [d[0] for d in pos_spikes]
-    neg_dates_only = [d[0] for d in neg_spikes]
+        if (
+            keyword_col
+            and not df_filtered.empty
+        ):
 
-    if sel_sentiment == "Positive":
-        active_spike_dates = sorted(list(set(pos_dates_only)))
-    elif sel_sentiment == "Negative":
-        active_spike_dates = sorted(list(set(neg_dates_only)))
-    else:
-        # All Sentiments / Neutral: gabungan tanggal peak
-        active_spike_dates = sorted(list(set(pos_dates_only + neg_dates_only)))
+            positive_keyword, positive_count = (
+                get_top_keyword(
+                    df_filtered,
+                    keyword_col,
+                    sentiment="Positive"
+                )
+            )
 
-    # 3. Dropdown pilihan tanggal peak dinamis
-    with f_tbl_col1:
-        date_options = ["All Peak Dates"] + [d.strftime("%d %B %Y") for d in active_spike_dates]
-        sel_peak_date = st.selectbox(
-            "Filter Peak Date:", 
-            options=date_options, 
-            index=0, 
-            key="tbl_sel_peak_date"
+            negative_keyword, negative_count = (
+                get_top_keyword(
+                    df_filtered,
+                    keyword_col,
+                    sentiment="Negative"
+                )
+            )
+
+            # -------------------------------------------------
+            # Positive keyword
+            # -------------------------------------------------
+            if positive_keyword:
+
+                safe_positive = html.escape(
+                    str(
+                        positive_keyword
+                    )
+                )
+
+                render_html(
+                    f"""
+                    <div class="keyword-card">
+
+                        <span
+                            class="keyword-label"
+                            style="
+                                color:#059669;
+                            "
+                        >
+                            Positive
+                        </span>
+
+                        <span class="keyword-name">
+                            {safe_positive}
+                        </span>
+
+                        <span class="keyword-count">
+                            {positive_count:,}
+                        </span>
+
+                    </div>
+                    """
+                )
+
+            else:
+
+                render_html(
+                    """
+                    <div class="keyword-card">
+
+                        <span
+                            class="keyword-label"
+                            style="
+                                color:#059669;
+                            "
+                        >
+                            Positive
+                        </span>
+
+                        <span
+                            class="keyword-name"
+                            style="
+                                color:#94a3b8;
+                            "
+                        >
+                            No keyword available
+                        </span>
+
+                    </div>
+                    """
+                )
+
+            # -------------------------------------------------
+            # Negative keyword
+            # -------------------------------------------------
+            if negative_keyword:
+
+                safe_negative = html.escape(
+                    str(
+                        negative_keyword
+                    )
+                )
+
+                render_html(
+                    f"""
+                    <div class="keyword-card">
+
+                        <span
+                            class="keyword-label"
+                            style="
+                                color:#dc2626;
+                            "
+                        >
+                            Negative
+                        </span>
+
+                        <span class="keyword-name">
+                            {safe_negative}
+                        </span>
+
+                        <span class="keyword-count">
+                            {negative_count:,}
+                        </span>
+
+                    </div>
+                    """
+                )
+
+            else:
+
+                render_html(
+                    """
+                    <div class="keyword-card">
+
+                        <span
+                            class="keyword-label"
+                            style="
+                                color:#dc2626;
+                            "
+                        >
+                            Negative
+                        </span>
+
+                        <span
+                            class="keyword-name"
+                            style="
+                                color:#94a3b8;
+                            "
+                        >
+                            No keyword available
+                        </span>
+
+                    </div>
+                    """
+                )
+
+        elif not keyword_col:
+
+            render_html(
+                """
+                <div class="keyword-card">
+
+                    <span
+                        class="keyword-name"
+                        style="
+                            color:#94a3b8;
+                        "
+                    >
+                        KEYWORD column is not
+                        available in the dataset.
+                    </span>
+
+                </div>
+                """
+            )
+
+        else:
+
+            render_html(
+                """
+                <div class="keyword-card">
+
+                    <span
+                        class="keyword-name"
+                        style="
+                            color:#94a3b8;
+                        "
+                    >
+                        No keyword available.
+                    </span>
+
+                </div>
+                """
+            )
+
+    st.markdown(
+        "<div style='margin-bottom:26px;'></div>",
+        unsafe_allow_html=True
+    )
+
+    # =========================================================
+    # 25. PEAK DATE ARTICLES TIMELINE
+    # The hourly timeline is integrated into PEAK DATE ARTICLES below.
+    st.markdown(
+        "<div style='height:18px;'></div>",
+        unsafe_allow_html=True
+    )
+
+    # 26. PEAK DATE ARTICLES
+    #
+    # The selected peak date controls one hourly publication timeline.
+    # The sentiment filter below affects ONLY the article list.
+    # =========================================================
+
+    positive_spike_dates = [
+        item[0]
+        for item in pos_spikes
+    ]
+
+    negative_spike_dates = [
+        item[0]
+        for item in neg_spikes
+    ]
+
+    all_spike_dates = sorted(
+        list(
+            set(
+                positive_spike_dates
+                + negative_spike_dates
+            )
+        ),
+        reverse=True
+    )
+
+    render_html(
+        """
+        <div class="sa-card-title">
+            PEAK DATE ARTICLES
+        </div>
+        """
+    )
+
+    # =========================================================
+    # FILTERS
+    # =========================================================
+    filter_date_col, filter_sent_col = st.columns(
+        [1.6, 1.4],
+        gap="medium"
+    )
+
+    # ---------------------------------------------------------
+    # Peak Date
+    # Default = latest spike date
+    # ---------------------------------------------------------
+    with filter_date_col:
+
+        if all_spike_dates:
+
+            article_date_options = [
+                "All Peak Dates"
+            ] + [
+                date.strftime(
+                    "%d %B %Y"
+                )
+                for date
+                in all_spike_dates
+            ]
+
+            selected_article_date = st.selectbox(
+                "Peak Date:",
+                options=article_date_options,
+                index=0,
+                key="sa_article_date"
+            )
+
+            if selected_article_date == "All Peak Dates":
+                selected_date_raw = None
+            else:
+                selected_date_raw = all_spike_dates[
+                    article_date_options.index(
+                        selected_article_date
+                    ) - 1
+                ]
+
+        else:
+
+            selected_article_date = None
+            selected_date_raw = None
+
+            st.selectbox(
+                "Peak Date:",
+                options=[
+                    "No spike date available"
+                ],
+                disabled=True,
+                key="sa_article_date_empty"
+            )
+
+    # ---------------------------------------------------------
+    # Sentiment filter
+    # ONLY affects article list
+    # ---------------------------------------------------------
+    with filter_sent_col:
+
+        # -----------------------------------------------------
+        # Once a Peak Date is selected, its sentiment is already
+        # determined by the spike detection. Therefore the
+        # sentiment filter is automatically locked to that
+        # spike sentiment.
+        # -----------------------------------------------------
+        if selected_date_raw is not None:
+
+            date_is_positive = (
+                selected_date_raw
+                in positive_spike_dates
+            )
+
+            date_is_negative = (
+                selected_date_raw
+                in negative_spike_dates
+            )
+
+            if date_is_positive and not date_is_negative:
+
+                locked_sentiment = "Positive"
+
+            elif date_is_negative and not date_is_positive:
+
+                locked_sentiment = "Negative"
+
+            elif date_is_positive and date_is_negative:
+
+                # Both sentiments are spike types on the same date.
+                # Keep "All Sentiments" as the locked state so both
+                # spike lines/articles remain available.
+                locked_sentiment = "All Sentiments"
+
+            else:
+
+                locked_sentiment = "All Sentiments"
+
+            selected_article_sentiment = st.selectbox(
+                "Filter Sentiment:",
+                options=[
+                    locked_sentiment
+                ],
+                index=0,
+                disabled=True,
+                key="sa_article_sentiment"
+            )
+
+        else:
+
+            selected_article_sentiment = st.selectbox(
+                "Filter Sentiment:",
+                options=[
+                    "All Sentiments",
+                    "Positive",
+                    "Negative"
+                ],
+                index=0,
+                key="sa_article_sentiment"
+            )
+
+    # =========================================================
+    # HOURLY PUBLICATION TIMELINE
+    # =========================================================
+    if (
+        selected_date_raw is not None
+        and "NEWS_DATE" in df_filtered.columns
+        and sent_col
+    ):
+
+        selected_is_positive = (
+            selected_date_raw
+            in positive_spike_dates
         )
 
-    # 4. Filter artikel hanya dari tanggal peak aktif
-    if active_spike_dates and "NEWS_DATE" in df_filtered.columns:
-        df_spike_articles = df_filtered[df_filtered["NEWS_DATE"].dt.date.isin(active_spike_dates)].copy()
-    else:
-        df_spike_articles = pd.DataFrame()
+        selected_is_negative = (
+            selected_date_raw
+            in negative_spike_dates
+        )
 
-    df_table = df_spike_articles.copy()
-    if not df_table.empty and "NEWS_DATE" in df_table.columns:
-        if sel_peak_date != "All Peak Dates":
-            df_table = df_table[df_table["NEWS_DATE"].dt.strftime("%d %B %Y") == sel_peak_date]
+        chart_sentiments = []
 
-        if sel_sentiment != "All Sentiments" and sent_col:
-            df_table = df_table[df_table[sent_col].astype(str).str.lower().str.contains(sel_sentiment.lower()[:3])]
+        if selected_is_positive:
+            chart_sentiments.append("Positive")
 
-    # 5. Visualisasi Distribusi Waktu
-    if not df_table.empty and "NEWS_DATE" in df_table.columns:
-        all_sent_configs = [("Positive", "#16a34a"), ("Neutral", "#94a3b8"), ("Negative", "#dc2626")]
-        if sel_sentiment != "All Sentiments":
-            active_sent_configs = [item for item in all_sent_configs if item[0].lower() == sel_sentiment.lower()]
+        if selected_is_negative:
+            chart_sentiments.append("Negative")
+
+        day_start = pd.Timestamp(
+            selected_date_raw
+        )
+
+        day_end = (
+            day_start
+            + pd.Timedelta(days=1)
+        )
+
+        # Only the sentiment(s) responsible for the spike
+        # are included in this chart.
+        df_day = df_filtered[
+            (
+                df_filtered["NEWS_DATE"]
+                >= day_start
+            )
+            &
+            (
+                df_filtered["NEWS_DATE"]
+                < day_end
+            )
+            &
+            (
+                df_filtered[sent_col]
+                .isin(chart_sentiments)
+            )
+        ].copy()
+
+        hourly_index = pd.date_range(
+            start=day_start,
+            periods=24,
+            freq="h"
+        )
+
+        # -----------------------------------------------------
+        # Determine header accent
+        # -----------------------------------------------------
+        if (
+            selected_is_positive
+            and not selected_is_negative
+        ):
+
+            chart_accent = "#16a34a"
+
+        elif (
+            selected_is_negative
+            and not selected_is_positive
+        ):
+
+            chart_accent = "#dc2626"
+
         else:
-            active_sent_configs = all_sent_configs
 
-        if sel_peak_date != "All Peak Dates":
-            df_table["HOUR"] = df_table["NEWS_DATE"].dt.hour
-            hourly_counts = df_table.groupby(["HOUR", sent_col]).size().unstack(fill_value=0).reset_index()
-            
-            full_hours = pd.DataFrame({"HOUR": list(range(24))})
-            hourly_df = pd.merge(full_hours, hourly_counts, on="HOUR", how="left").fillna(0)
-            hourly_df["HOUR_LABEL"] = hourly_df["HOUR"].apply(lambda h: f"{h:02d}:00")
+            chart_accent = "#475569"
 
-            sum_series = df_table.groupby("HOUR").size()
-            peak_h = sum_series.idxmax() if not sum_series.empty else 0
-            peak_h_cnt = sum_series.max() if not sum_series.empty else 0
+        render_html(
+            f"""
+            <div style="
+                margin-top:18px;
+                margin-bottom:8px;
+                display:flex;
+                justify-content:space-between;
+                align-items:end;
+            ">
 
-            st.markdown(f"""
-                <div style="font-size: 0.72rem; color: #475569; margin-bottom: 6px; font-weight: 600;">
-                    Peak Publication Hour on <b>{sel_peak_date}</b>: <b style="color:#2563eb;">{peak_h:02d}:00 - {peak_h:02d}:59</b> ({peak_h_cnt} articles)
+                <div>
+                    <div style="
+                        font-size:0.72rem;
+                        font-weight:800;
+                        color:#334155;
+                        text-transform:uppercase;
+                        letter-spacing:0.05em;
+                    ">
+                        HOURLY PUBLICATION TIMELINE
+                    </div>
+
+                    <div style="
+                        font-size:0.68rem;
+                        color:#64748b;
+                        margin-top:3px;
+                    ">
+                        {selected_article_date}
+                        • Spike sentiment only
+                    </div>
                 </div>
-            """, unsafe_allow_html=True)
 
-            fig_time = go.Figure()
-            for s_name, s_color in active_sent_configs:
-                if s_name in hourly_df.columns:
-                    fig_time.add_trace(go.Bar(
-                        x=hourly_df["HOUR_LABEL"], 
-                        y=hourly_df[s_name], 
-                        name=s_name, 
-                        marker_color=s_color
-                    ))
+                <div style="
+                    font-size:0.68rem;
+                    font-weight:800;
+                    color:{chart_accent};
+                ">
+                    {", ".join(chart_sentiments)}
+                </div>
 
-            fig_time.update_layout(
-                barmode="stack", 
-                height=180, 
-                margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor="#f8fafc", 
-                plot_bgcolor="#f8fafc",
-                xaxis=dict(showgrid=False, tickfont=dict(size=8.5, color="#64748b")),
-                yaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.9)", tickfont=dict(size=8.5, color="#94a3b8")),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=9))
-            )
-            st.plotly_chart(
-                fig_time, 
-                use_container_width=True, 
-                config={"displayModeBar": False}
-            )
+            </div>
+            """
+        )
 
-        else:
-            date_bar_counts = df_table.groupby([df_table["NEWS_DATE"].dt.strftime("%d %b %Y"), sent_col]).size().unstack(fill_value=0).reset_index()
-            date_bar_counts.rename(columns={"NEWS_DATE": "DATE_LABEL"}, inplace=True)
+        fig_peak_timeline = go.Figure()
 
-            fig_time = go.Figure()
-            for s_name, s_color in active_sent_configs:
-                if s_name in date_bar_counts.columns:
-                    fig_time.add_trace(go.Bar(
-                        x=date_bar_counts["DATE_LABEL"], 
-                        y=date_bar_counts[s_name], 
-                        name=s_name, 
-                        marker_color=s_color
-                    ))
+        for sentiment_name in chart_sentiments:
 
-            fig_time.update_layout(
-                barmode="stack", 
-                height=180, 
-                margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor="#f8fafc", 
-                plot_bgcolor="#f8fafc",
-                xaxis=dict(showgrid=False, tickfont=dict(size=8.5, color="#64748b")),
-                yaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.9)", tickfont=dict(size=8.5, color="#94a3b8")),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=9))
-            )
-            st.plotly_chart(
-                fig_time, 
-                use_container_width=True, 
-                config={"displayModeBar": False}
+            df_sent_day = df_day[
+                df_day[sent_col]
+                == sentiment_name
+            ].copy()
+
+            if df_sent_day.empty:
+
+                hourly_counts = pd.Series(
+                    0,
+                    index=hourly_index,
+                    dtype="int64"
+                )
+
+            else:
+
+                hourly_counts = (
+                    df_sent_day
+                    .set_index("NEWS_DATE")
+                    .resample("h")
+                    .size()
+                    .reindex(
+                        hourly_index,
+                        fill_value=0
+                    )
+                )
+
+            sentiment_color = (
+                "#16a34a"
+                if sentiment_name == "Positive"
+                else "#dc2626"
             )
 
-    st.markdown("<div style='margin-bottom: 14px;'></div>", unsafe_allow_html=True)
+            fig_peak_timeline.add_trace(
+                go.Scatter(
+                    x=hourly_counts.index,
+                    y=hourly_counts.values,
+                    mode="lines+markers",
+                    name=sentiment_name,
+                    line=dict(
+                        color=sentiment_color,
+                        width=2.5,
+                        shape="linear"
+                    ),
+                    marker=dict(
+                        size=5,
+                        color=sentiment_color
+                    ),
+                    hovertemplate=(
+                        f"<b>{sentiment_name}</b>"
+                        "<br>%{x|%H:%M}"
+                        "<br>Articles: %{y}"
+                        "<extra></extra>"
+                    )
+                )
+            )
 
-    # -------------------------------------------------------------
-    # 8. ARTICLE BREAKDOWN TABLE
-    # -------------------------------------------------------------
-    if title_col and not df_table.empty:
-        if "NEWS_DATE" in df_table.columns:
-            df_table = df_table.sort_values(by="NEWS_DATE", ascending=False)
+        fig_peak_timeline.update_layout(
+            height=250,
+            margin=dict(
+                l=0,
+                r=0,
+                t=8,
+                b=8
+            ),
+            paper_bgcolor="#f8fafc",
+            plot_bgcolor="#f8fafc",
+            hovermode="x unified",
+            showlegend=(
+                len(chart_sentiments) > 1
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="left",
+                x=0,
+                font=dict(size=9)
+            ),
+            xaxis=dict(
+                title=None,
+                range=[
+                    day_start,
+                    day_end
+                ],
+                showgrid=False,
+                tickmode="array",
+                tickvals=[
+                    day_start
+                    + pd.Timedelta(
+                        hours=h
+                    )
+                    for h in range(
+                        0,
+                        24,
+                        3
+                    )
+                ],
+                ticktext=[
+                    f"{h:02d}:00"
+                    for h in range(
+                        0,
+                        24,
+                        3
+                    )
+                ],
+                tickfont=dict(
+                    size=8,
+                    color="#64748b"
+                )
+            ),
+            yaxis=dict(
+                title="Articles",
+                showgrid=True,
+                gridcolor=(
+                    "rgba(226, 232, 240, 0.9)"
+                ),
+                tickfont=dict(
+                    size=8,
+                    color="#94a3b8"
+                ),
+                rangemode="tozero"
+            )
+        )
+
+        st.plotly_chart(
+            fig_peak_timeline,
+            use_container_width=True,
+            config={
+                "displayModeBar": True,
+                "modeBarButtons": [
+                    [
+                        "zoom2d",
+                        "pan2d",
+                        "resetScale2d"
+                    ]
+                ],
+                "displaylogo": False
+            }
+        )
+
+    elif not all_spike_dates:
+
+        st.info(
+            "No positive or negative spike was detected "
+            "within the selected period."
+        )
+
+    # =========================================================
+    # ARTICLE LIST
+    # =========================================================
+    if (
+        "NEWS_DATE" in df_filtered.columns
+        and selected_date_raw is not None
+    ):
+
+        df_articles = (
+            df_filtered[
+                df_filtered[
+                    "NEWS_DATE"
+                ].dt.date
+                == selected_date_raw
+            ]
+            .copy()
+        )
+
+    elif (
+        "NEWS_DATE" in df_filtered.columns
+        and selected_article_date == "All Peak Dates"
+        and all_spike_dates
+    ):
+
+        # All Peak Dates: keep the article list visible and show
+        # articles from every detected spike date.
+        df_articles = (
+            df_filtered[
+                df_filtered[
+                    "NEWS_DATE"
+                ].dt.date
+                .isin(all_spike_dates)
+            ]
+            .copy()
+        )
+
+    else:
+
+        df_articles = pd.DataFrame()
+
+    # Sentiment filter affects ONLY the article list.
+    if (
+        not df_articles.empty
+        and sent_col
+        and selected_article_sentiment
+        != "All Sentiments"
+    ):
+
+        df_articles = df_articles[
+            df_articles[
+                sent_col
+            ]
+            .astype(str)
+            .str.lower()
+            == selected_article_sentiment.lower()
+        ]
+
+    # =========================================================
+    # ARTICLE TABLE
+    # =========================================================
+    if (
+        title_col
+        and not df_articles.empty
+    ):
+
+        df_articles = (
+            df_articles
+            .sort_values(
+                by="NEWS_DATE",
+                ascending=False
+            )
+        )
 
         df_show = pd.DataFrame()
-        df_show["Article"] = df_table[title_col].astype(str).str.replace(r'[\r\n]+', ' ', regex=True)
+
+        df_show["Article"] = (
+            df_articles[
+                title_col
+            ]
+            .astype(str)
+            .str.replace(
+                r"[\r\n]+",
+                " ",
+                regex=True
+            )
+        )
 
         if media_col:
+
             df_show["Media Source"] = (
-                df_table[media_col].astype(str)
-                .str.replace("https://", "", regex=False)
-                .str.replace("http://", "", regex=False)
-                .str.replace("www.", "", regex=False)
-                .str.split("/").str[0]
+                df_articles[
+                    media_col
+                ]
+                .astype(str)
+                .str.replace(
+                    "https://",
+                    "",
+                    regex=False
+                )
+                .str.replace(
+                    "http://",
+                    "",
+                    regex=False
+                )
+                .str.replace(
+                    "www.",
+                    "",
+                    regex=False
+                )
+                .str.split("/")
+                .str[0]
             )
+
         else:
+
             df_show["Media Source"] = "N/A"
 
-        if "NEWS_DATE" in df_table.columns:
-            df_show["Date"] = pd.to_datetime(df_table["NEWS_DATE"], errors="coerce").dt.strftime("%Y-%m-%d")
-        else:
-            df_show["Date"] = "-"
+        df_show["Date"] = (
+            pd.to_datetime(
+                df_articles[
+                    "NEWS_DATE"
+                ],
+                errors="coerce"
+            )
+            .dt.strftime(
+                "%Y-%m-%d %H:%M"
+            )
+        )
 
-        df_show["Sentiment"] = df_art[sent_col]
+        if sent_col:
+
+            df_show["Sentiment"] = (
+                df_articles[
+                    sent_col
+                ]
+                .astype(str)
+            )
+
+        else:
+
+            df_show["Sentiment"] = "N/A"
+
         st.dataframe(
             df_show,
             use_container_width=True,
             height=420,
             hide_index=True,
             column_config={
-                "Article": st.column_config.TextColumn("Article", width="large"),
-                "Media Source": st.column_config.TextColumn("Media Source", width="medium"),
-                "Date": st.column_config.TextColumn("Date", width="small"),
-                "Sentiment": st.column_config.TextColumn("Sentiment", width="small"),
+
+                "Article":
+                    st.column_config.TextColumn(
+                        "Article",
+                        width="large"
+                    ),
+
+                "Media Source":
+                    st.column_config.TextColumn(
+                        "Media Source",
+                        width="medium"
+                    ),
+
+                "Date":
+                    st.column_config.TextColumn(
+                        "Date",
+                        width="medium"
+                    ),
+
+                "Sentiment":
+                    st.column_config.TextColumn(
+                        "Sentiment",
+                        width="small"
+                    )
             }
         )
+
     else:
-        st.info("No articles match the selected peak date or sentiment filter.")
+
+        st.info(
+            "No articles match the selected "
+            "peak date or sentiment filter."
+        )
+
