@@ -1,0 +1,15 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Konfigurasi editor
+.vscode/
+
+# File Kredensial Rahasia
+credentials.json
+.streamlit/secrets.toml
+users.csv
+
+# File dataset besar & log lokal lama
+tkb_news.xlsx
+login_history.csv

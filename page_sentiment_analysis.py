@@ -818,9 +818,6 @@ def render_sentiment_analysis_page(
 
         selected_range = st.date_input(
             "Select Period",
-            value=st.session_state[
-                "sa_date_range"
-            ],
             min_value=dataset_min_date,
             max_value=dataset_max_date,
             key="sa_date_range"

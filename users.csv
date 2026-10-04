@@ -1,2 +1,3 @@
 username,password,role,status
 admin,admin123,Admin,Active
+User,User123,User,Active

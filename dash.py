@@ -1,17 +1,17 @@
-import streamlit as st
 import pandas as pd
-from utils import load_custom_css, load_local_dataset, get_base64_image
-from page_login import render_login_page
-from page_home import render_home_page
-from page_sentiment_analysis import render_sentiment_analysis_page
-from page_deepdive import render_deepdive_page
+import streamlit as st
 from page_admin import render_admin_page
+from page_deepdive import render_deepdive_page
+from page_home import render_home_page
+from page_login import render_login_page
+from page_sentiment_analysis import render_sentiment_analysis_page
+from utils import get_base64_image, load_custom_css, load_local_dataset
 
 st.set_page_config(
     page_title="TKB News Sentiment Analysis",
     page_icon="assets/icons/logo_pertamina_square.png",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # 1. Autentikasi Pengguna
@@ -19,27 +19,30 @@ render_login_page()
 load_custom_css()
 
 if "active_page" not in st.session_state:
-    st.session_state.active_page = "HOME"
+  st.session_state.active_page = "HOME"
 
 df_raw, loaded_file_name = load_local_dataset()
 user_role = st.session_state.get("user_role", "user")
 
 # Guardrail: Cegah akses role non-admin ke halaman settings
 if user_role != "admin" and st.session_state.active_page == "ADMIN_SETTINGS":
-    st.session_state.active_page = "HOME"
+  st.session_state.active_page = "HOME"
+
 
 def navigate_to(page_name):
-    if st.session_state.active_page != page_name:
-        for key in ["home_filters", "ov_filters", "deep_filters"]:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.session_state.active_page = page_name
-        st.rerun()
+  if st.session_state.active_page != page_name:
+    for key in ["home_filters", "ov_filters", "deep_filters"]:
+      if key in st.session_state:
+        del st.session_state[key]
+    st.session_state.active_page = page_name
+    st.rerun()
+
 
 # -------------------------------------------------------------
 # CSS: FULL-BLEED TOPBAR & SIDEBAR WITH TITLES
 # -------------------------------------------------------------
-st.markdown("""
+st.markdown(
+    """
 <style>
     /* Sembunyikan header bawaan Streamlit agar tidak menimpa topbar kustom */
     header[data-testid="stHeader"] {
@@ -188,30 +191,36 @@ st.markdown("""
         font-weight: 700 !important;
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # -------------------------------------------------------------
 # TOPBAR BRANDING (MEMBENTANG PENUH UJUNG KE UJUNG)
 # -------------------------------------------------------------
 logo_full_b64 = get_base64_image("assets/icons/logo_pertamina_full.png")
 if logo_full_b64:
-    logo_markup = f'<img src="{logo_full_b64}" alt="Pertamina Digital Hub" />'
+  logo_markup = f'<img src="{logo_full_b64}" alt="Pertamina Digital Hub" />'
 else:
-    logo_markup = '<div class="dashboard-brand-fallback">PERTAMINA<span>DIGITAL HUB</span></div>'
+  logo_markup = '<div class="dashboard-brand-fallback">PERTAMINA<span>DIGITAL HUB</span></div>'
 
-st.markdown(f"""
+st.markdown(
+    f"""
     <div class="dashboard-topbar-fullbleed">
         <div class="dashboard-brand">{logo_markup}</div>
         <div class="dashboard-header-title">TKB NEWS SENTIMENT ANALYSIS</div>
     </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # -------------------------------------------------------------
 # SIDEBAR NAVIGATION (IKON + TEKS JUDUL)
 # -------------------------------------------------------------
 with st.sidebar:
-    # Profil Singkat Pengguna yang Login
-    st.markdown(f"""
+  # Profil Singkat Pengguna yang Login
+  st.markdown(
+      f"""
         <div style="margin-bottom: 16px; padding: 10px 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
             <div style="color: #64748b; font-size: 0.65rem; font-weight: 700; text-transform: uppercase;">Logged In As:</div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
@@ -222,41 +231,98 @@ with st.sidebar:
             </div>
         </div>
         <p style="font-size: 0.68rem; font-weight: 800; color: #94a3b8; letter-spacing: 0.05em; margin-bottom: 8px; margin-left: 4px;">DASHBOARD MENU</p>
-    """, unsafe_allow_html=True)
+    """,
+      unsafe_allow_html=True,
+  )
 
-    # Menu 1: Home
-    if st.button(":material/home: Dashboard Home", key="btn_nav_home", use_container_width=True, type="primary" if st.session_state.active_page == "HOME" else "secondary"):
-        navigate_to("HOME")
+  # Menu 1: Home
+  if st.button(
+      ":material/home: Dashboard Home",
+      key="btn_nav_home",
+      use_container_width=True,
+      type="primary" if st.session_state.active_page == "HOME" else "secondary",
+  ):
+    navigate_to("HOME")
 
-    # Menu 2: Sentiment Analysis
-    if st.button(":material/analytics: Sentiment Analysis", key="btn_nav_sentiment", use_container_width=True, type="primary" if st.session_state.active_page == "SENTIMENT_ANALYSIS" else "secondary"):
-        navigate_to("SENTIMENT_ANALYSIS")
+  # Menu 2: Sentiment Analysis
+  if st.button(
+      ":material/analytics: Sentiment Analysis",
+      key="btn_nav_sentiment",
+      use_container_width=True,
+      type=(
+          "primary"
+          if st.session_state.active_page == "SENTIMENT_ANALYSIS"
+          else "secondary"
+      ),
+  ):
+    navigate_to("SENTIMENT_ANALYSIS")
 
-    # Menu 3: Deep Dive
-    if st.button(":material/search: Topic Deep Dive", key="btn_nav_deepdive", use_container_width=True, type="primary" if st.session_state.active_page == "DEEP_DIVE" else "secondary"):
-        navigate_to("DEEP_DIVE")
+  # Menu 3: Deep Dive
+  if st.button(
+      ":material/search: Topic Deep Dive",
+      key="btn_nav_deepdive",
+      use_container_width=True,
+      type=(
+          "primary"
+          if st.session_state.active_page == "DEEP_DIVE"
+          else "secondary"
+      ),
+  ):
+    navigate_to("DEEP_DIVE")
 
-    # Menu 4: Admin Settings (Khusus Role Admin)
-    if user_role == "admin":
-        if st.button(":material/settings: Admin Settings", key="btn_nav_admin", use_container_width=True, type="primary" if st.session_state.active_page == "ADMIN_SETTINGS" else "secondary"):
-            navigate_to("ADMIN_SETTINGS")
+  # Menu 4: Admin Settings (Khusus Role Admin)
+  if user_role == "admin":
+    if st.button(
+        ":material/settings: Admin Settings",
+        key="btn_nav_admin",
+        use_container_width=True,
+        type=(
+            "primary"
+            if st.session_state.active_page == "ADMIN_SETTINGS"
+            else "secondary"
+        ),
+    ):
+      navigate_to("ADMIN_SETTINGS")
 
-    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+  st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
 
-    # Tombol Logout
-    if st.button(":material/logout: Logout", key="btn_nav_logout", use_container_width=True):
-        st.session_state.clear()
-        st.query_params.clear()
-        st.rerun()
+  # Tombol Logout
+  if st.button(
+      ":material/logout: Logout", key="btn_nav_logout", use_container_width=True
+  ):
+    st.session_state.clear()
+    st.query_params.clear()
+    st.rerun()
 
 # -------------------------------------------------------------
 # PAGE ROUTER
 # -------------------------------------------------------------
-if st.session_state.active_page == "HOME":
+# Cek apakah dataset masih kosong (file belum diupload di server)
+is_dataset_empty = df_raw is None or df_raw.empty
+
+if is_dataset_empty and st.session_state.active_page != "ADMIN_SETTINGS":
+  st.warning(
+      "⚠️ **Dataset Belum Tersedia di Server.** File `tkb_news.xlsx` belum"
+      " diunggah."
+  )
+  if user_role == "admin":
+    st.info(
+      "Sebagai Administrator, silakan buka menu **Admin Settings > Dataset"
+      " Manager** untuk mengunggah file dataset Excel."
+    )
+    if st.button("Ke Halaman Admin Settings", type="primary"):
+      navigate_to("ADMIN_SETTINGS")
+  else:
+    st.info(
+      "Silakan hubungi Administrator untuk mengunggah dataset berita melalui"
+      " panel Admin."
+  )
+else:
+  if st.session_state.active_page == "HOME":
     render_home_page(df_raw)
-elif st.session_state.active_page == "SENTIMENT_ANALYSIS":
+  elif st.session_state.active_page == "SENTIMENT_ANALYSIS":
     render_sentiment_analysis_page(df_raw)
-elif st.session_state.active_page == "DEEP_DIVE":
+  elif st.session_state.active_page == "DEEP_DIVE":
     render_deepdive_page(df_raw)
-elif st.session_state.active_page == "ADMIN_SETTINGS" and user_role == "admin":
+  elif st.session_state.active_page == "ADMIN_SETTINGS" and user_role == "admin":
     render_admin_page(df_raw, loaded_file_name)

@@ -6,3 +6,4 @@ openpyxl
 pillow
 openai
 requests
+st-gsheets-connection

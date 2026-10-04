@@ -1,44 +1,55 @@
-import streamlit as st
-import time
 import os
-import pandas as pd
+import time
 from datetime import datetime
+import gspread
+import pandas as pd
+import streamlit as st
 from utils import get_base64_image
 
-LOG_FILE = "login_history.csv"
+# ID Dokumen Google Spreadsheet Anda[cite: 3, 4]
+SPREADSHEET_ID = "1m6t-71Gk6EJKjG306fOvO_fSmo_7jwyDcqJSTbWxfoE"
+CREDS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "credentials.json"
+)
 
-def record_login_history(username: str, role: str):
-    """Mencatat tanggal, waktu, nama pengguna, dan peran ke file CSV."""
-    now = datetime.now()
-    log_entry = {
-        "Tanggal": now.strftime("%Y-%m-%d"),
-        "Waktu": now.strftime("%H:%M:%S"),
-        "Username": username,
-        "Role": role.upper()
-    }
-    df_new = pd.DataFrame([log_entry])
-    if not os.path.exists(LOG_FILE):
-        df_new.to_csv(LOG_FILE, index=False)
+
+def record_login(username: str, role: str = "user", status: str = "SUCCESS"):
+  """Mencatat sesi login langsung ke baris paling bawah Google Sheets menggunakan gspread."""
+  try:
+    if os.path.exists(CREDS_FILE):
+      gc = gspread.service_account(filename=CREDS_FILE)
+      sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
+      sheet.append_row([
+          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+          str(username),
+          str(role),
+          str(status),
+      ])
+      print(f"Log berhasil dicatat untuk user: {username}")
     else:
-        df_new.to_csv(LOG_FILE, mode="a", header=False, index=False)
+      print(f"File {CREDS_FILE} tidak ditemukan. Gagal mencatat log login.")
+  except Exception as e:
+    print(f"Error mencatat ke Google Sheets: {e}")
+
 
 def render_login_page():
-    if not st.session_state.get("logged_in", False):
-        user_param = st.query_params.get("user")
-        role_param = st.query_params.get("role")
-        if user_param and role_param:
-            st.session_state.logged_in = True
-            st.session_state.username = user_param
-            st.session_state.user_role = role_param
-            return
+  if not st.session_state.get("logged_in", False):
+    user_param = st.query_params.get("user")
+    role_param = st.query_params.get("role")
+    if user_param and role_param:
+      st.session_state.logged_in = True
+      st.session_state.username = user_param
+      st.session_state.user_role = role_param
+      return
 
-    if st.session_state.get("logged_in", False):
-        return
+  if st.session_state.get("logged_in", False):
+    return
 
-    if "login_animating" not in st.session_state:
-        st.session_state.login_animating = False
+  if "login_animating" not in st.session_state:
+    st.session_state.login_animating = False
 
-    st.markdown("""
+  st.markdown(
+      """
         <style>
             /* Sembunyikan elemen bawaan Streamlit */
             [data-testid="stSidebar"],
@@ -181,9 +192,7 @@ def render_login_page():
                 text-transform: uppercase;
             }
 
-            /* ============================================================
-               BORDER UTUH PADA KOTAK INPUT (GARIS BAWAH JELAS & RAPI)
-               ============================================================ */
+            /* Kotak Input */
             div[data-testid="stTextInput"] {
                 margin: 0 0 16px 0 !important;
             }
@@ -285,22 +294,28 @@ def render_login_page():
                 pointer-events: none;
             }
         </style>
-    """, unsafe_allow_html=True)
+    """,
+      unsafe_allow_html=True,
+  )
 
-    logo_full_b64 = get_base64_image("assets/icons/logo_pertamina_full.png")
-    if logo_full_b64:
-        logo_markup = f'<img src="{logo_full_b64}" alt="Pertamina Digital Hub" />'
-    else:
-        logo_markup = '<div class="login-brand-fallback">PERTAMINA<span>DIGITAL HUB</span></div>'
+  logo_full_b64 = get_base64_image("assets/icons/logo_pertamina_full.png")
+  if logo_full_b64:
+    logo_markup = f'<img src="{logo_full_b64}" alt="Pertamina Digital Hub" />'
+  else:
+    logo_markup = '<div class="login-brand-fallback">PERTAMINA<span>DIGITAL HUB</span></div>'
 
-    st.markdown(f"""
+  st.markdown(
+      f"""
         <div class="login-topbar">
             <div class="login-brand">{logo_markup}</div>
             <div class="login-header-title">TKB NEWS SENTIMENT ANALYSIS</div>
         </div>
-    """, unsafe_allow_html=True)
+    """,
+      unsafe_allow_html=True,
+  )
 
-    st.markdown("""
+  st.markdown(
+      """
         <div class="login-center-wrapper">
             <div class="login-icon-box">
                 <svg viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -312,69 +327,113 @@ def render_login_page():
             <h1 class="login-main-heading">Masuk ke Dashboard</h1>
             <p class="login-sub-heading">Platform analisis sentimen berita Pertamina</p>
         </div>
-    """, unsafe_allow_html=True)
+    """,
+      unsafe_allow_html=True,
+  )
 
-    is_anim = st.session_state.get("login_animating", False)
+  is_anim = st.session_state.get("login_animating", False)
 
-    with st.form("pertamina_login_form"):
-        st.markdown('<p class="login-field-label">USERNAME</p>', unsafe_allow_html=True)
-        username_input = st.text_input("Username", label_visibility="collapsed", placeholder="Masukkan username")
+  with st.form("pertamina_login_form"):
+    st.markdown(
+        '<p class="login-field-label">USERNAME</p>', unsafe_allow_html=True
+    )
+    username_input = st.text_input(
+        "Username", label_visibility="collapsed", placeholder="Masukkan username"
+    )
 
-        st.markdown('<p class="login-field-label">PASSWORD</p>', unsafe_allow_html=True)
-        password_input = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Masukkan password")
+    st.markdown(
+        '<p class="login-field-label">PASSWORD</p>', unsafe_allow_html=True
+    )
+    password_input = st.text_input(
+        "Password",
+        type="password",
+        label_visibility="collapsed",
+        placeholder="Masukkan password",
+    )
 
-        submit_btn = st.form_submit_button("MASUK KE DASHBOARD", use_container_width=True)
+    submit_btn = st.form_submit_button(
+        "MASUK KE DASHBOARD", use_container_width=True
+    )
 
-    if submit_btn:
-        USERS_FILE = "users.csv"
-        authenticated = False
-        auth_user = ""
-        auth_role = ""
+  if submit_btn:
+    users_csv_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "users.csv"
+    )
+    authenticated = False
+    auth_user = ""
+    auth_role = ""
 
-        # 1. Cek akun default bawaan
-        if username_input == "admin" and password_input == "admin123":
-            authenticated = True
-            auth_user = "Admin"
-            auth_role = "admin"
-        elif username_input == "user" and password_input == "user123":
-            authenticated = True
-            auth_user = "User"
-            auth_role = "user"
+    # 1. Akun default sistem
+    if username_input == "admin" and password_input == "admin123":
+      authenticated = True
+      auth_user = "Admin"
+      auth_role = "admin"
+    elif username_input == "user" and password_input == "user123":
+      authenticated = True
+      auth_user = "User"
+      auth_role = "user"
 
-        # 2. Cek ke file users.csv jika belum cocok
-        elif os.path.exists(USERS_FILE):
-            try:
-                df_u = pd.read_csv(USERS_FILE)
-                u_col = next((c for c in ["username", "USERNAME", "user", "USER"] if c in df_u.columns), "username")
-                p_col = next((c for c in ["password", "PASSWORD"] if c in df_u.columns), "password")
-                r_col = next((c for c in ["role", "ROLE"] if c in df_u.columns), "role")
+    # 2. Cek ke file users.csv
+    elif os.path.exists(users_csv_path):
+      try:
+        df_u = pd.read_csv(users_csv_path)
+        u_col = next(
+            (
+                c
+                for c in ["username", "USERNAME", "user", "USER"]
+                if c in df_u.columns
+            ),
+            "username",
+        )
+        p_col = next(
+            (
+                c
+                for c in ["password", "PASSWORD"]
+                if c in df_u.columns
+            ),
+            "password",
+        )
+        r_col = next(
+            (c for c in ["role", "ROLE"] if c in df_u.columns), "role"
+        )
 
-                matched = df_u[(df_u[u_col].astype(str) == username_input) & (df_u[p_col].astype(str) == password_input)]
-                if not matched.empty:
-                    authenticated = True
-                    auth_user = str(matched.iloc[0][u_col])
-                    auth_role = str(matched.iloc[0][r_col]).lower()
-            except Exception:
-                pass
+        matched = df_u[
+            (df_u[u_col].astype(str) == username_input)
+            & (df_u[p_col].astype(str) == password_input)
+        ]
+        if not matched.empty:
+          authenticated = True
+          auth_user = str(matched.iloc[0][u_col])
+          auth_role = str(matched.iloc[0][r_col]).lower()
+      except Exception:
+        pass
 
-        if authenticated:
-            record_login_history(auth_user, auth_role)
-            st.session_state.login_animating = True
-            st.session_state.pending_user = auth_user
-            st.session_state.pending_role = auth_role
-            st.rerun()
-        else:
-            st.error("Kredensial Salah: Periksa kembali username dan password Anda.")
+    if authenticated:
+      record_login(username=auth_user, role=auth_role, status="SUCCESS")
+      st.session_state.login_animating = True
+      st.session_state.pending_user = auth_user
+      st.session_state.pending_role = auth_role
+      st.rerun()
+    else:
+      record_login(
+          username=username_input or "unknown", role="-", status="FAILED"
+      )
+      st.error(
+          "Kredensial Salah: Periksa kembali username dan password Anda."
+      )
 
-    if is_anim:
-        time.sleep(0.5)
-        st.session_state.logged_in = True
-        st.session_state.username = st.session_state.pending_user
-        st.session_state.user_role = st.session_state.pending_role
-        st.query_params["user"] = st.session_state.pending_user
-        st.query_params["role"] = st.session_state.pending_role
-        st.session_state.login_animating = False
-        st.rerun()
+  if is_anim:
+    time.sleep(0.5)
+    st.session_state.logged_in = True
+    st.session_state.username = st.session_state.pending_user
+    st.session_state.user_role = st.session_state.pending_role
+    st.query_params["user"] = st.session_state.pending_user
+    st.query_params["role"] = st.session_state.pending_role
+    st.session_state.login_animating = False
+    st.rerun()
 
-    st.markdown('<div class="login-footer-text">© Pertamina Digital Hub</div>', unsafe_allow_html=True)
-    st.stop()
+  st.markdown(
+      '<div class="login-footer-text">© Pertamina Digital Hub</div>',
+      unsafe_allow_html=True,
+  )
+  st.stop()
